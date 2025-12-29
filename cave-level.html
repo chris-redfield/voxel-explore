@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Asteroid - Floating Cave</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a12;
+            color: #eee;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            overflow: hidden;
+        }
+        #container { display: flex; height: 100vh; }
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            cursor: crosshair;
+        }
+        #canvas-container.locked { cursor: none; }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        #ui {
+            width: 260px;
+            background: #12121a;
+            padding: 15px;
+            overflow-y: auto;
+        }
+        h1 { font-size: 1.2em; margin-bottom: 5px; color: #ff9f43; }
+        .subtitle { font-size: 0.75em; color: #888; margin-bottom: 15px; }
+        h2 {
+            font-size: 0.85em;
+            margin: 12px 0 8px;
+            color: #0a0a12;
+            background: #ff9f43;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 0.8em;
+        }
+        .stat-label { color: #888; }
+        .stat-value { color: #ff9f43; font-family: 'Consolas', monospace; }
+        .stat-value.highlight { color: #ffd700; font-weight: bold; }
+        .stat-value.flying { color: #00bfff; font-weight: bold; text-shadow: 0 0 8px #00bfff; }
+        .stat-value.cave { color: #ff6b6b; font-weight: bold; text-shadow: 0 0 8px #ff6b6b; }
+        .info {
+            background: #1a1a25;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            line-height: 1.6;
+            margin-top: 12px;
+        }
+        .key {
+            display: inline-block;
+            background: #e94560;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', monospace;
+            margin: 1px;
+            font-size: 0.85em;
+        }
+
+        /* Day/Night Toggle */
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 10px 0;
+            padding: 8px 10px;
+            background: #1a1a25;
+            border-radius: 6px;
+        }
+        .toggle-label {
+            font-size: 0.85em;
+            color: #ccc;
+        }
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 26px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #2a2a3a;
+            border-radius: 26px;
+            transition: 0.3s;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: #ffd700;
+            border-radius: 50%;
+            transition: 0.3s;
+            box-shadow: 0 0 8px #ffd700;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background: #1a1a3a;
+        }
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+            background: #aaccff;
+            box-shadow: 0 0 8px #aaccff;
+        }
+        .mode-icon {
+            font-size: 1.1em;
+            margin-left: 8px;
+        }
+        /* Lantern toggle specific */
+        .lantern-slider:before {
+            background: #666;
+            box-shadow: none;
+        }
+        .toggle-switch input:checked + .lantern-slider {
+            background: #3a2a1a;
+        }
+        .toggle-switch input:checked + .lantern-slider:before {
+            background: #ffaa33;
+            box-shadow: 0 0 12px #ffaa33, 0 0 20px #ff8800;
+        }
+        /* Orb lights toggle */
+        .orb-slider:before {
+            background: #666;
+            box-shadow: none;
+        }
+        .toggle-switch input:checked + .orb-slider {
+            background: #1a2a3a;
+        }
+        .toggle-switch input:checked + .orb-slider:before {
+            background: #88ddff;
+            box-shadow: 0 0 12px #88ddff, 0 0 20px #44aaff;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+        #overlay.hidden { opacity: 0; }
+        #overlay h2 {
+            background: none;
+            color: #fff;
+            font-size: 1.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        #overlay p { color: #aaa; margin-top: 10px; }
+
+        .crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+        .crosshair.visible { opacity: 0.8; }
+        .crosshair::before, .crosshair::after {
+            content: '';
+            position: absolute;
+            background: #fff;
+        }
+        .crosshair::before {
+            width: 2px;
+            height: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .crosshair::after {
+            width: 100%;
+            height: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: rgba(0,0,0,0.95);
+            padding: 40px 50px;
+            border-radius: 12px;
+            z-index: 100;
+        }
+        #loading h2 {
+            background: none;
+            color: #ff9f43;
+            font-size: 1.4em;
+            margin-bottom: 20px;
+        }
+        #loading-progress {
+            width: 320px;
+            height: 24px;
+            background: #1a1a25;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        #loading-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #ff9f43, #ee5a24);
+            width: 0%;
+            transition: width 0.05s ease;
+        }
+        #loading-text { color: #888; font-size: 0.9em; }
+        #loading-stats {
+            color: #666;
+            font-size: 0.75em;
+            margin-top: 10px;
+            font-family: 'Consolas', monospace;
+        }
+
+        .hidden { display: none !important; }
+
+        #respawn-message {
+            position: absolute;
+            top: 30%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(233, 69, 96, 0.9);
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 1.2em;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        #respawn-message.visible { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="canvas-container">
+            <canvas id="canvas"></canvas>
+
+            <div id="loading">
+                <h2>Forming Asteroid...</h2>
+                <div id="loading-progress">
+                    <div id="loading-bar"></div>
+                </div>
+                <div id="loading-text">Initializing...</div>
+                <div id="loading-stats"></div>
+            </div>
+
+            <div id="overlay" class="hidden">
+                <h2>Click to Explore</h2>
+                <p>WASD to move, SPACE to jump, Mouse to look, F to fly</p>
+            </div>
+
+            <div class="crosshair"></div>
+            <div id="respawn-message">Respawning...</div>
+        </div>
+
+        <div id="ui">
+            <h1>Floating Asteroid</h1>
+            <div class="subtitle">Cave in the Sky</div>
+
+            <div class="toggle-container">
+                <span class="toggle-label">Day / Night</span>
+                <div style="display: flex; align-items: center;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="day-night-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="mode-icon" id="mode-icon">&#9728;</span>
+                </div>
+            </div>
+
+            <div class="toggle-container">
+                <span class="toggle-label">Lantern</span>
+                <div style="display: flex; align-items: center;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="lantern-toggle">
+                        <span class="toggle-slider lantern-slider"></span>
+                    </label>
+                    <span class="mode-icon" id="lantern-icon">&#128294;</span>
+                </div>
+            </div>
+
+            <div class="toggle-container">
+                <span class="toggle-label">Orb Lights</span>
+                <div style="display: flex; align-items: center;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="orb-lights-toggle" checked>
+                        <span class="toggle-slider orb-slider"></span>
+                    </label>
+                    <span class="mode-icon" id="orb-icon">&#10022;</span>
+                </div>
+            </div>
+
+            <h2>Player</h2>
+            <div class="stat">
+                <span class="stat-label">Position</span>
+                <span class="stat-value" id="player-pos">(0, 0, 0)</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">On Ground</span>
+                <span class="stat-value" id="on-ground">No</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Flying</span>
+                <span class="stat-value" id="flying-status">No</span>
+            </div>
+
+            <h2>Asteroid Stats</h2>
+            <div class="stat">
+                <span class="stat-label">World Size</span>
+                <span class="stat-value cave" id="world-size">512³</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Voxels</span>
+                <span class="stat-value" id="voxel-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Active Bricks</span>
+                <span class="stat-value" id="brick-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Light Orbs</span>
+                <span class="stat-value highlight" id="light-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Memory</span>
+                <span class="stat-value" id="memory-usage">0 MB</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Load Time</span>
+                <span class="stat-value" id="load-time">-</span>
+            </div>
+
+            <h2>Performance</h2>
+            <div class="stat">
+                <span class="stat-label">FPS</span>
+                <span class="stat-value highlight" id="fps">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Frame Time</span>
+                <span class="stat-value" id="frame-time">0 ms</span>
+            </div>
+
+            <div class="info">
+                <strong>Controls:</strong><br>
+                <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move<br>
+                <span class="key">SPACE</span> Jump / Fly Up<br>
+                <span class="key">SHIFT</span> Sprint / Fly Down<br>
+                <span class="key">F</span> Toggle Flight<br>
+                <span class="key">L</span> Toggle Lantern<br>
+                <span class="key">Mouse</span> Look around<br>
+                <span class="key">ESC</span> Release cursor
+            </div>
+        </div>
+    </div>
+
+    <script src="engine.js"></script>
+
+    <script>
+    // ============================================================
+    // Cave Generator - Creates underground cavern with formations
+    // ============================================================
+    class CaveGenerator {
+        constructor(seed = 12345) {
+            this.seed = seed;
+            this.lightOrbCount = 0;
+        }
+
+        // Simple pseudo-random number generator
+        pseudoRandom(seed) {
+            const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+            return x - Math.floor(x);
+        }
+
+        // 2D noise for terrain variation
+        noise2D(x, z, scale, seed) {
+            const nx = x * scale + seed;
+            const nz = z * scale + seed * 1.5;
+            return (Math.sin(nx) * Math.cos(nz) +
+                    Math.sin(nx * 2.1 + 0.5) * Math.cos(nz * 1.9 + 0.3) * 0.5 +
+                    Math.sin(nx * 4.3 + 1.2) * Math.cos(nz * 3.7 + 0.7) * 0.25) / 1.75;
+        }
+
+        // 3D noise for cave carving
+        noise3D(x, y, z, scale, seed) {
+            const nx = x * scale + seed;
+            const ny = y * scale + seed * 1.3;
+            const nz = z * scale + seed * 1.7;
+            return (
+                Math.sin(nx) * Math.cos(ny) * Math.sin(nz) +
+                Math.sin(nx * 2.1) * Math.cos(ny * 1.9) * Math.sin(nz * 2.3) * 0.5 +
+                Math.sin(nx * 4.2) * Math.cos(ny * 3.8) * Math.sin(nz * 4.1) * 0.25
+            ) / 1.75;
+        }
+
+        // Generate the cave in a region
+        generateCave(world, centerX, centerY, centerZ, radius, progressCallback) {
+            const minX = Math.max(0, centerX - radius);
+            const maxX = Math.min(world.worldSize - 1, centerX + radius);
+            const minY = Math.max(0, centerY - radius);
+            const maxY = Math.min(world.worldSize - 1, centerY + radius);
+            const minZ = Math.max(0, centerZ - radius);
+            const maxZ = Math.min(world.worldSize - 1, centerZ + radius);
+
+            const totalSlices = maxX - minX + 1;
+            let processed = 0;
+
+            // First pass: Create cave shell (walls, floor, ceiling)
+            for (let x = minX; x <= maxX; x++) {
+                for (let z = minZ; z <= maxZ; z++) {
+                    for (let y = minY; y <= maxY; y++) {
+                        const dx = x - centerX;
+                        const dy = y - centerY;
+                        const dz = z - centerZ;
+
+                        // Distance from center (ellipsoid shape - wider than tall)
+                        const distXZ = Math.sqrt(dx * dx + dz * dz);
+                        const distY = Math.abs(dy) * 1.5; // Make cave flatter
+                        const dist = Math.sqrt(distXZ * distXZ + distY * distY);
+
+                        // Add noise to make irregular cave shape
+                        const noise = this.noise3D(x, y, z, 0.03, this.seed) * 30;
+                        const wallNoise = this.noise3D(x, y, z, 0.08, this.seed + 1000) * 15;
+
+                        const effectiveRadius = radius + noise + wallNoise;
+
+                        // Check if this is part of the cave structure
+                        if (dist < effectiveRadius) {
+                            // Shell thickness varies with noise
+                            const shellThickness = 8 + this.noise3D(x, y, z, 0.05, this.seed + 2000) * 5;
+
+                            if (dist > effectiveRadius - shellThickness) {
+                                // This is the cave wall/floor/ceiling
+                                this._placeRockVoxel(world, x, y, z, y < centerY);
+                            }
+                            // else: interior is empty (air)
+                        }
+                    }
+                }
+
+                processed++;
+                if (progressCallback && processed % 10 === 0) {
+                    progressCallback(processed / totalSlices, 'Carving cave walls...');
+                }
+            }
+
+            // Second pass: Add ceiling openings for light
+            this._addCeilingOpenings(world, centerX, centerY, centerZ, radius);
+
+            // Third pass: Generate stalagmites and stalactites
+            this._generateFormations(world, centerX, centerY, centerZ, radius);
+
+            // Fourth pass: Add glowing light orbs
+            this._addLightOrbs(world, centerX, centerY, centerZ, radius);
+
+            // Fifth pass: Add some ground details (rocks, minerals)
+            this._addGroundDetails(world, centerX, centerY, centerZ, radius);
+        }
+
+        _placeRockVoxel(world, x, y, z, isFloor) {
+            const variation = this.pseudoRandom(x * 1000 + y * 100 + z);
+            let r, g, b;
+
+            if (isFloor) {
+                // Floor rocks - darker, brownish gray
+                if (variation > 0.95) {
+                    // Occasional mineral sparkle
+                    r = 180 + (variation * 50) | 0;
+                    g = 170 + (variation * 40) | 0;
+                    b = 140 + (variation * 30) | 0;
+                } else if (variation > 0.8) {
+                    // Darker patches
+                    r = 45 + (variation * 15) | 0;
+                    g = 40 + (variation * 15) | 0;
+                    b = 35 + (variation * 10) | 0;
+                } else {
+                    // Standard floor rock
+                    r = 70 + (variation * 25) | 0;
+                    g = 65 + (variation * 20) | 0;
+                    b = 55 + (variation * 20) | 0;
+                }
+            } else {
+                // Walls and ceiling - gray with hints of color
+                if (variation > 0.97) {
+                    // Crystal/mineral deposits
+                    const mineralType = (variation * 3) | 0;
+                    if (mineralType === 0) {
+                        r = 100; g = 150; b = 200; // Blue crystal
+                    } else if (mineralType === 1) {
+                        r = 200; g = 150; b = 100; // Amber
+                    } else {
+                        r = 150; g = 200; b = 150; // Green mineral
+                    }
+                } else if (variation > 0.85) {
+                    // Wet/mossy patches
+                    r = 50 + (variation * 20) | 0;
+                    g = 70 + (variation * 25) | 0;
+                    b = 50 + (variation * 15) | 0;
+                } else {
+                    // Standard rock
+                    const base = 80 + (variation * 30) | 0;
+                    r = base;
+                    g = base - 5;
+                    b = base - 10;
+                }
+            }
+
+            world.setVoxel(x, y, z, r, g, b);
+        }
+
+        _addCeilingOpenings(world, centerX, centerY, centerZ, radius) {
+            // Create several openings in the ceiling
+            const numOpenings = 5 + Math.floor(this.pseudoRandom(this.seed + 5000) * 8);
+
+            for (let i = 0; i < numOpenings; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 100) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 100 + 50) * radius * 0.7;
+
+                const openingX = centerX + Math.cos(angle) * dist;
+                const openingZ = centerZ + Math.sin(angle) * dist;
+                const openingRadius = 8 + this.pseudoRandom(this.seed + i * 200) * 15;
+
+                // Find ceiling height at this position
+                const ceilingY = centerY + radius * 0.5;
+
+                // Carve opening through ceiling
+                for (let ox = -openingRadius; ox <= openingRadius; ox++) {
+                    for (let oz = -openingRadius; oz <= openingRadius; oz++) {
+                        const d = Math.sqrt(ox * ox + oz * oz);
+                        if (d < openingRadius) {
+                            const wx = Math.floor(openingX + ox);
+                            const wz = Math.floor(openingZ + oz);
+
+                            // Clear from ceiling upward
+                            for (let y = ceilingY - 5; y < ceilingY + 20; y++) {
+                                const edgeFade = 1 - (d / openingRadius);
+                                if (this.pseudoRandom(wx + y * 100 + wz * 10) < edgeFade * 0.8) {
+                                    // Remove rock (set to empty)
+                                    const voxel = world.getVoxel(wx, y, wz);
+                                    if (voxel && voxel.a > 0) {
+                                        // We can't remove voxels easily, so we'll mark this area
+                                        // Actually, we need to not place voxels here during generation
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        _generateFormations(world, centerX, centerY, centerZ, radius) {
+            // Generate stalagmites (from floor) - scan DOWN from center to find floor
+            const numStalagmites = 80 + Math.floor(this.pseudoRandom(this.seed + 3000) * 120);
+
+            for (let i = 0; i < numStalagmites; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 50) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 50 + 25) * radius * 0.75;
+
+                const baseX = Math.floor(centerX + Math.cos(angle) * dist);
+                const baseZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Scan DOWN from center to find the floor surface
+                let foundFloor = false;
+                let floorY = centerY;
+
+                for (let y = centerY; y > centerY - radius - 20; y--) {
+                    const v = world.getVoxel(baseX, y, baseZ);
+                    if (v && v.a > 0) {
+                        // Found solid rock - the floor surface is at y+1
+                        floorY = y + 1;
+                        foundFloor = true;
+                        break;
+                    }
+                }
+
+                // Only create stalagmite if we found actual floor
+                if (foundFloor) {
+                    const height = 5 + Math.floor(this.pseudoRandom(this.seed + i * 100) * 20);
+                    const baseRadius = 2 + Math.floor(this.pseudoRandom(this.seed + i * 100 + 10) * 3);
+                    this._createStalagmite(world, baseX, floorY, baseZ, height, baseRadius);
+                }
+            }
+
+            // Generate stalactites (from ceiling) - scan UP from center to find ceiling
+            const numStalactites = 100 + Math.floor(this.pseudoRandom(this.seed + 4000) * 150);
+
+            for (let i = 0; i < numStalactites; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 70 + 1000) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 70 + 1025) * radius * 0.75;
+
+                const baseX = Math.floor(centerX + Math.cos(angle) * dist);
+                const baseZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Scan UP from center to find the ceiling surface
+                let foundCeiling = false;
+                let ceilingY = centerY;
+
+                for (let y = centerY; y < centerY + radius + 20; y++) {
+                    const v = world.getVoxel(baseX, y, baseZ);
+                    if (v && v.a > 0) {
+                        // Found solid rock - the ceiling surface is at y-1
+                        ceilingY = y - 1;
+                        foundCeiling = true;
+                        break;
+                    }
+                }
+
+                // Only create stalactite if we found actual ceiling (not an opening)
+                if (foundCeiling) {
+                    // Double-check there's solid rock directly above where we'll attach
+                    const attachCheck = world.getVoxel(baseX, ceilingY + 1, baseZ);
+                    if (attachCheck && attachCheck.a > 0) {
+                        const length = 4 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1000) * 18);
+                        const baseRadius = 1 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1010) * 2);
+                        this._createStalactite(world, baseX, ceilingY, baseZ, length, baseRadius);
+                    }
+                }
+            }
+        }
+
+        _createStalagmite(world, baseX, baseY, baseZ, height, baseRadius) {
+            for (let y = 0; y < height; y++) {
+                // Taper toward top
+                const progress = y / height;
+                const currentRadius = baseRadius * (1 - progress * 0.9);
+
+                for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+                    for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+                        const d = Math.sqrt(dx * dx + dz * dz);
+                        if (d <= currentRadius) {
+                            const wx = baseX + dx;
+                            const wy = baseY + y;
+                            const wz = baseZ + dz;
+
+                            // Color variation
+                            const v = this.pseudoRandom(wx + wy * 100 + wz);
+                            const brightness = 60 + (v * 40) | 0;
+                            const r = brightness + 10;
+                            const g = brightness + 5;
+                            const b = brightness - 5;
+
+                            world.setVoxel(wx, wy, wz, r, g, b);
+                        }
+                    }
+                }
+            }
+        }
+
+        _createStalactite(world, baseX, baseY, baseZ, length, baseRadius) {
+            for (let y = 0; y < length; y++) {
+                // Taper toward bottom
+                const progress = y / length;
+                const currentRadius = baseRadius * (1 - progress * 0.95);
+
+                for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+                    for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+                        const d = Math.sqrt(dx * dx + dz * dz);
+                        if (d <= currentRadius) {
+                            const wx = baseX + dx;
+                            const wy = baseY - y;
+                            const wz = baseZ + dz;
+
+                            // Slightly different coloring - more gray
+                            const v = this.pseudoRandom(wx + wy * 100 + wz);
+                            const brightness = 70 + (v * 35) | 0;
+                            const r = brightness;
+                            const g = brightness;
+                            const b = brightness + 5;
+
+                            world.setVoxel(wx, wy, wz, r, g, b);
+                        }
+                    }
+                }
+            }
+
+            // Add drip at bottom (optional wet look)
+            if (this.pseudoRandom(baseX + baseZ) > 0.7) {
+                world.setVoxel(baseX, baseY - length, baseZ, 100, 120, 140);
+            }
+        }
+
+        _addLightOrbs(world, centerX, centerY, centerZ, radius) {
+            // Scatter glowing orbs throughout the cave (reduced by half)
+            const numOrbs = 15 + Math.floor(this.pseudoRandom(this.seed + 6000) * 20);
+            this.lightOrbCount = numOrbs;
+
+            // Store orb data for shader lighting (max 16 active lights)
+            this.orbLights = [];
+
+            const orbColors = [
+                [255, 220, 100],  // Warm yellow
+                [100, 200, 255],  // Cool blue
+                [255, 150, 100],  // Orange
+                [150, 255, 150],  // Green
+                [255, 180, 220],  // Pink
+                [200, 150, 255],  // Purple
+            ];
+
+            for (let i = 0; i < numOrbs; i++) {
+                // Position orbs in the air space of the cave
+                const angle = this.pseudoRandom(this.seed + i * 80 + 6000) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 80 + 6025) * radius * 0.7;
+                const heightOffset = (this.pseudoRandom(this.seed + i * 80 + 6050) - 0.5) * radius * 0.5;
+
+                const orbX = Math.floor(centerX + Math.cos(angle) * dist);
+                const orbY = Math.floor(centerY + heightOffset);
+                const orbZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Check if position is clear (in air)
+                const existingVoxel = world.getVoxel(orbX, orbY, orbZ);
+                if (existingVoxel && existingVoxel.a > 0) continue;
+
+                // Orb size varies
+                const orbRadius = 1 + Math.floor(this.pseudoRandom(this.seed + i * 90) * 2);
+                const color = orbColors[Math.floor(this.pseudoRandom(this.seed + i * 95) * orbColors.length)];
+
+                // Generate a random direction for the orb to point
+                const dirAngle = this.pseudoRandom(this.seed + i * 110 + 7000) * Math.PI * 2;
+                const dirPitch = (this.pseudoRandom(this.seed + i * 110 + 7050) - 0.5) * Math.PI * 0.8;
+                const dirX = Math.cos(dirPitch) * Math.sin(dirAngle);
+                const dirY = Math.sin(dirPitch);
+                const dirZ = Math.cos(dirPitch) * Math.cos(dirAngle);
+
+                // Store orb light data (limit to 16 for shader)
+                if (this.orbLights.length < 16) {
+                    this.orbLights.push({
+                        pos: [orbX + 0.5, orbY + 0.5, orbZ + 0.5],
+                        dir: [dirX, dirY, dirZ],
+                        color: [color[0] / 255, color[1] / 255, color[2] / 255],
+                        intensity: 3.0  // 50% brighter than before (was ~2.0 effective)
+                    });
+                }
+
+                // Create glowing orb voxels (50% brighter)
+                for (let dx = -orbRadius; dx <= orbRadius; dx++) {
+                    for (let dy = -orbRadius; dy <= orbRadius; dy++) {
+                        for (let dz = -orbRadius; dz <= orbRadius; dz++) {
+                            const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                            if (d <= orbRadius) {
+                                // Brighter at center - 50% increase
+                                const brightness = (1 - (d / orbRadius) * 0.3) * 1.5;
+                                const r = Math.min(255, color[0] * brightness) | 0;
+                                const g = Math.min(255, color[1] * brightness) | 0;
+                                const b = Math.min(255, color[2] * brightness) | 0;
+
+                                world.setVoxel(orbX + dx, orbY + dy, orbZ + dz, r, g, b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        _addGroundDetails(world, centerX, centerY, centerZ, radius) {
+            // Add scattered rocks and crystals on the floor
+            const floorY = centerY - radius * 0.4;
+            const numDetails = 150 + Math.floor(this.pseudoRandom(this.seed + 7000) * 100);
+
+            for (let i = 0; i < numDetails; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 60 + 7000) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 60 + 7025) * radius * 0.8;
+
+                const detailX = Math.floor(centerX + Math.cos(angle) * dist);
+                const detailZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Find floor
+                let actualFloorY = floorY;
+                for (let y = centerY; y > floorY - 20; y--) {
+                    const v = world.getVoxel(detailX, y, detailZ);
+                    if (v && v.a > 0) {
+                        actualFloorY = y + 1;
+                        break;
+                    }
+                }
+
+                const detailType = this.pseudoRandom(this.seed + i * 70 + 7050);
+
+                if (detailType > 0.8) {
+                    // Small crystal cluster
+                    const crystalColor = detailType > 0.9
+                        ? [150, 200, 255] // Blue crystal
+                        : [200, 150, 255]; // Purple crystal
+
+                    for (let dy = 0; dy < 3; dy++) {
+                        world.setVoxel(detailX, actualFloorY + dy, detailZ,
+                            crystalColor[0], crystalColor[1], crystalColor[2]);
+                    }
+                } else if (detailType > 0.5) {
+                    // Small rock
+                    const v = this.pseudoRandom(detailX + detailZ);
+                    const gray = 50 + (v * 30) | 0;
+                    world.setVoxel(detailX, actualFloorY, detailZ, gray, gray - 5, gray - 10);
+                }
+                // else nothing (keep some areas clear)
+            }
+        }
+    }
+
+    // ============================================================
+    // Player with physics (same as minecraft-game2.html)
+    // ============================================================
+    class Player {
+        constructor() {
+            this.x = 0; this.y = 50; this.z = 0;
+            this.vx = 0; this.vy = 0; this.vz = 0;
+            this.yaw = 0; this.pitch = 0;
+            this.width = 0.6; this.height = 1.8; this.eyeHeight = 1.6;
+            this.onGround = false;
+            this.walkSpeed = 6; this.sprintSpeed = 12;
+            this.flySpeed = 30;
+            this.jumpForce = 8; this.gravity = 25;
+            this.spawnX = 0; this.spawnY = 50; this.spawnZ = 0;
+            this.flying = false;
+        }
+
+        setSpawn(x, y, z) { this.spawnX = x; this.spawnY = y; this.spawnZ = z; }
+        respawn() { this.x = this.spawnX; this.y = this.spawnY; this.z = this.spawnZ; this.vx = this.vy = this.vz = 0; this.flying = false; }
+        getEyePos() { return [this.x, this.y + this.eyeHeight, this.z]; }
+        getForward() { return [Math.sin(this.yaw), Math.cos(this.yaw)]; }
+        getRight() { return [Math.cos(this.yaw), -Math.sin(this.yaw)]; }
+
+        toggleFlight() {
+            this.flying = !this.flying;
+            if (this.flying) this.vy = 0;
+        }
+
+        rotate(dy, dp) {
+            this.yaw += dy;
+            this.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, this.pitch - dp));
+        }
+
+        jump() { if (this.onGround && !this.flying) { this.vy = this.jumpForce; this.onGround = false; } }
+    }
+
+    // ============================================================
+    // Cave Game
+    // ============================================================
+    class CaveGame {
+        constructor(canvasId) {
+            this.canvas = document.getElementById(canvasId);
+            this.engine = new VoxelEngine(this.canvas);
+            this.player = new Player();
+            this.caveGen = new CaveGenerator(Math.floor(Math.random() * 100000));
+
+            this.loadTime = 0;
+            this.keys = {};
+            this.isLocked = false;
+            this.isNightMode = false;
+            this.mouseDelta = { x: 0, y: 0 };
+            this.fps = 0;
+            this.frameCount = 0;
+            this.lastFpsTime = performance.now();
+
+            this._setupInput();
+        }
+
+        setDayNightMode(isNight) {
+            this.isNightMode = isNight;
+            if (isNight) {
+                // Night mode - dark atmospheric
+                this.engine.settings.skyColorTop = [0.02, 0.02, 0.08];
+                this.engine.settings.skyColorBottom = [0.05, 0.08, 0.15];
+                this.engine.settings.fogDensity = 1.5;
+                this.engine.settings.lightDirection = this._normalize([0.2, 0.3, 0.5]);
+                document.getElementById('mode-icon').innerHTML = '&#9790;'; // Moon
+            } else {
+                // Day mode - bright outdoor
+                this.engine.settings.skyColorTop = [0.1, 0.1, 0.44];
+                this.engine.settings.skyColorBottom = [0.53, 0.81, 0.92];
+                this.engine.settings.fogDensity = 0.8;
+                this.engine.settings.lightDirection = this._normalize([0.5, 0.8, 0.3]);
+                document.getElementById('mode-icon').innerHTML = '&#9728;'; // Sun
+            }
+        }
+
+        setLantern(enabled) {
+            this.engine.settings.lanternEnabled = enabled;
+            const icon = document.getElementById('lantern-icon');
+            if (enabled) {
+                icon.innerHTML = '&#128294;'; // Lantern on
+                icon.style.textShadow = '0 0 10px #ffaa33';
+            } else {
+                icon.innerHTML = '&#128294;'; // Lantern off
+                icon.style.textShadow = 'none';
+            }
+        }
+
+        setOrbLights(enabled) {
+            // Store original orb lights if not already stored
+            if (!this._storedOrbLights && this.engine.settings.orbLights.length > 0) {
+                this._storedOrbLights = this.engine.settings.orbLights;
+            }
+
+            if (enabled && this._storedOrbLights) {
+                this.engine.settings.orbLights = this._storedOrbLights;
+            } else {
+                this.engine.settings.orbLights = [];
+            }
+
+            const icon = document.getElementById('orb-icon');
+            if (enabled) {
+                icon.style.textShadow = '0 0 10px #88ddff';
+                icon.style.color = '#88ddff';
+            } else {
+                icon.style.textShadow = 'none';
+                icon.style.color = '#666';
+            }
+        }
+
+        _normalize(v) {
+            const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+            return [v[0]/len, v[1]/len, v[2]/len];
+        }
+
+        _setupInput() {
+            // Day/Night toggle
+            document.getElementById('day-night-toggle').addEventListener('change', (e) => {
+                this.setDayNightMode(e.target.checked);
+            });
+
+            // Lantern toggle
+            document.getElementById('lantern-toggle').addEventListener('change', (e) => {
+                this.setLantern(e.target.checked);
+            });
+
+            // Orb lights toggle
+            document.getElementById('orb-lights-toggle').addEventListener('change', (e) => {
+                this.setOrbLights(e.target.checked);
+            });
+
+            window.addEventListener('keydown', e => {
+                if (this.keys[e.code]) return;
+                this.keys[e.code] = true;
+                if (e.code === 'Space') { e.preventDefault(); this.player.jump(); }
+                if (e.code === 'KeyF') { this.player.toggleFlight(); }
+                if (e.code === 'KeyL') {
+                    // Toggle lantern with L key
+                    const toggle = document.getElementById('lantern-toggle');
+                    toggle.checked = !toggle.checked;
+                    this.setLantern(toggle.checked);
+                }
+                if (e.code === 'Escape' && this.isLocked) document.exitPointerLock();
+            });
+            window.addEventListener('keyup', e => this.keys[e.code] = false);
+            this.canvas.addEventListener('click', () => {
+                if (!this.isLocked) this.canvas.requestPointerLock();
+            });
+            document.addEventListener('pointerlockchange', () => {
+                this.isLocked = document.pointerLockElement === this.canvas;
+                document.getElementById('overlay').classList.toggle('hidden', this.isLocked);
+                document.querySelector('.crosshair').classList.toggle('visible', this.isLocked);
+                this.canvas.parentElement.classList.toggle('locked', this.isLocked);
+                if (!this.isLocked) this.keys = {};
+            });
+            window.addEventListener('blur', () => this.keys = {});
+            document.addEventListener('mousemove', e => {
+                if (this.isLocked) {
+                    this.mouseDelta.x += e.movementX;
+                    this.mouseDelta.y += e.movementY;
+                }
+            });
+            window.addEventListener('resize', () => this._resize());
+        }
+
+        async init() {
+            const loadingBar = document.getElementById('loading-bar');
+            const loadingText = document.getElementById('loading-text');
+            const loadingStats = document.getElementById('loading-stats');
+
+            const startTime = performance.now();
+
+            const progress = (p, text, stats = '') => {
+                loadingBar.style.width = (p * 100) + '%';
+                loadingText.textContent = text;
+                loadingStats.textContent = stats;
+            };
+
+            progress(0, 'Creating cave world...', '');
+            await this._delay(50);
+
+            // Create world: 64 coarse = 512³ voxels (good size for a cave)
+            this.engine.createWorld(64, 8);
+            const worldSize = this.engine.world.worldSize;
+            const center = worldSize / 2;
+
+            document.getElementById('world-size').textContent = worldSize + '³';
+
+            progress(0.05, 'Preparing cave generation...', '');
+            await this._delay(50);
+
+            // Generate the cave
+            const caveRadius = 180; // Large cave
+
+            // Use a modified approach - generate the cave with progress updates
+            await this._generateCaveWithProgress(center, center, center, caveRadius, progress);
+
+            const genTime = performance.now();
+            progress(0.90, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
+            await this._delay(50);
+
+            // Upload to GPU
+            this.engine.uploadWorld();
+
+            // Pass orb lights to engine for dynamic lighting
+            if (this.caveGen.orbLights && this.caveGen.orbLights.length > 0) {
+                this.engine.settings.orbLights = this.caveGen.orbLights;
+            }
+
+            const uploadTime = performance.now();
+            progress(0.98, 'Setting spawn point...', `Upload: ${((uploadTime - genTime)/1000).toFixed(1)}s`);
+            await this._delay(50);
+
+            // Spawn player in center of cave
+            this.player.x = center;
+            this.player.y = center + 5; // Slightly above center
+            this.player.z = center;
+            this.player.setSpawn(this.player.x, this.player.y, this.player.z);
+            this.player.flying = true; // Start flying for easy exploration
+
+            this.loadTime = (performance.now() - startTime) / 1000;
+
+            progress(1, 'Ready!', `Total: ${this.loadTime.toFixed(1)}s`);
+            await this._delay(500);
+
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('overlay').classList.remove('hidden');
+            document.getElementById('load-time').textContent = this.loadTime.toFixed(1) + 's';
+            document.getElementById('light-count').textContent = this.caveGen.lightOrbCount;
+
+            // Initialize orb icon style (starts enabled)
+            const orbIcon = document.getElementById('orb-icon');
+            orbIcon.style.textShadow = '0 0 10px #88ddff';
+            orbIcon.style.color = '#88ddff';
+
+            // Use bright outdoor lighting like minecraft-game2.html
+            this.engine.settings.enableShadows = true;
+            this.engine.settings.fogDensity = 0.8;
+            // Bright sky colors (same as minecraft-game2.html defaults)
+            this.engine.settings.skyColorTop = [0.1, 0.1, 0.44];
+            this.engine.settings.skyColorBottom = [0.53, 0.81, 0.92];
+            this.engine.camera.fov = 70;
+            this._resize();
+
+            console.log('=== CAVE LOADED ===');
+            console.log(`World size: ${worldSize}³`);
+            console.log(`Voxels: ${this.engine.getVoxelCount().toLocaleString()}`);
+            console.log(`Bricks: ${this.engine.getBrickCount().toLocaleString()}`);
+            console.log(`Light orbs: ${this.caveGen.lightOrbCount}`);
+            console.log(`Memory: ${this.engine.getMemoryUsage().totalMB.toFixed(2)} MB`);
+            console.log(`Load time: ${this.loadTime.toFixed(1)}s`);
+        }
+
+        async _generateCaveWithProgress(centerX, centerY, centerZ, radius, progress) {
+            const world = this.engine.world;
+            const minX = Math.max(0, centerX - radius);
+            const maxX = Math.min(world.worldSize - 1, centerX + radius);
+            const minY = Math.max(0, centerY - radius);
+            const maxY = Math.min(world.worldSize - 1, centerY + radius);
+            const minZ = Math.max(0, centerZ - radius);
+            const maxZ = Math.min(world.worldSize - 1, centerZ + radius);
+
+            const totalSlices = maxX - minX + 1;
+            let processed = 0;
+            let lastUpdate = performance.now();
+
+            // Keep track of ceiling opening positions
+            const ceilingOpenings = [];
+            const numOpenings = 8 + Math.floor(this.caveGen.pseudoRandom(this.caveGen.seed + 5000) * 10);
+
+            for (let i = 0; i < numOpenings; i++) {
+                const angle = this.caveGen.pseudoRandom(this.caveGen.seed + i * 100) * Math.PI * 2;
+                const dist = this.caveGen.pseudoRandom(this.caveGen.seed + i * 100 + 50) * radius * 0.6;
+                const openingRadius = 10 + this.caveGen.pseudoRandom(this.caveGen.seed + i * 200) * 20;
+
+                ceilingOpenings.push({
+                    x: centerX + Math.cos(angle) * dist,
+                    z: centerZ + Math.sin(angle) * dist,
+                    radius: openingRadius
+                });
+            }
+
+            // Generate cave shell
+            for (let x = minX; x <= maxX; x++) {
+                for (let z = minZ; z <= maxZ; z++) {
+                    for (let y = minY; y <= maxY; y++) {
+                        const dx = x - centerX;
+                        const dy = y - centerY;
+                        const dz = z - centerZ;
+
+                        // Ellipsoid shape - wider than tall
+                        const distXZ = Math.sqrt(dx * dx + dz * dz);
+                        const distY = Math.abs(dy) * 1.3;
+                        const dist = Math.sqrt(distXZ * distXZ + distY * distY);
+
+                        // Add noise for irregular shape
+                        const noise = this.caveGen.noise3D(x, y, z, 0.025, this.caveGen.seed) * 35;
+                        const wallNoise = this.caveGen.noise3D(x, y, z, 0.07, this.caveGen.seed + 1000) * 18;
+
+                        const effectiveRadius = radius + noise + wallNoise;
+
+                        // Check if in ceiling opening area
+                        let inOpening = false;
+                        if (y > centerY + radius * 0.3) { // Upper part of cave
+                            for (const opening of ceilingOpenings) {
+                                const openDist = Math.sqrt(
+                                    Math.pow(x - opening.x, 2) +
+                                    Math.pow(z - opening.z, 2)
+                                );
+                                if (openDist < opening.radius) {
+                                    // Fade out based on distance from edge and height
+                                    const edgeFactor = openDist / opening.radius;
+                                    const heightFactor = (y - (centerY + radius * 0.3)) / (radius * 0.4);
+                                    if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
+                                        inOpening = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (dist < effectiveRadius && !inOpening) {
+                            // Shell thickness
+                            const shellThickness = 10 + this.caveGen.noise3D(x, y, z, 0.04, this.caveGen.seed + 2000) * 6;
+
+                            if (dist > effectiveRadius - shellThickness) {
+                                // Place cave wall
+                                this.caveGen._placeRockVoxel(world, x, y, z, y < centerY);
+                            }
+                        }
+                    }
+                }
+
+                processed++;
+                const now = performance.now();
+                if (now - lastUpdate > 80) {
+                    const p = 0.05 + (processed / totalSlices) * 0.60;
+                    progress(p, `Carving cave: ${Math.floor(processed/totalSlices*100)}%`,
+                        `${processed}/${totalSlices} slices`);
+                    lastUpdate = now;
+                    await this._delay(1);
+                }
+            }
+
+            // Generate formations
+            progress(0.70, 'Growing stalagmites and stalactites...', '');
+            await this._delay(10);
+            this.caveGen._generateFormations(world, centerX, centerY, centerZ, radius);
+
+            // Add light orbs
+            progress(0.80, 'Placing light orbs...', '');
+            await this._delay(10);
+            this.caveGen._addLightOrbs(world, centerX, centerY, centerZ, radius);
+
+            // Add ground details
+            progress(0.85, 'Adding cave details...', '');
+            await this._delay(10);
+            this.caveGen._addGroundDetails(world, centerX, centerY, centerZ, radius);
+        }
+
+        _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        _resize() {
+            const c = this.canvas.parentElement;
+            this.engine.resize(c.clientWidth, c.clientHeight);
+        }
+
+        _checkCollision(x, y, z) {
+            const hw = this.player.width / 2;
+            const points = [
+                [x-hw, y, z-hw], [x+hw, y, z-hw], [x-hw, y, z+hw], [x+hw, y, z+hw],
+                [x-hw, y+0.9, z-hw], [x+hw, y+0.9, z-hw], [x-hw, y+0.9, z+hw], [x+hw, y+0.9, z+hw],
+                [x-hw, y+1.8, z-hw], [x+hw, y+1.8, z-hw], [x-hw, y+1.8, z+hw], [x+hw, y+1.8, z+hw],
+            ];
+            for (const [px, py, pz] of points) {
+                const v = this.engine.world.getVoxel(Math.floor(px), Math.floor(py), Math.floor(pz));
+                if (v && v.a > 0) return true;
+            }
+            return false;
+        }
+
+        _isOnGround() {
+            const hw = this.player.width / 2;
+            const y = this.player.y - 0.1;
+            const points = [
+                [this.player.x-hw, y, this.player.z-hw],
+                [this.player.x+hw, y, this.player.z-hw],
+                [this.player.x-hw, y, this.player.z+hw],
+                [this.player.x+hw, y, this.player.z+hw],
+                [this.player.x, y, this.player.z],
+            ];
+            for (const [px, py, pz] of points) {
+                const v = this.engine.world.getVoxel(Math.floor(px), Math.floor(py), Math.floor(pz));
+                if (v && v.a > 0) return true;
+            }
+            return false;
+        }
+
+        _updatePlayer(dt) {
+            this.player.rotate(this.mouseDelta.x * 0.002, this.mouseDelta.y * 0.002);
+            this.mouseDelta.x = this.mouseDelta.y = 0;
+
+            const [fx, fz] = this.player.getForward();
+            const [rx, rz] = this.player.getRight();
+            let mx = 0, mz = 0, my = 0;
+
+            if (this.keys['KeyW']) { mx += fx; mz += fz; }
+            if (this.keys['KeyS']) { mx -= fx; mz -= fz; }
+            if (this.keys['KeyA']) { mx -= rx; mz -= rz; }
+            if (this.keys['KeyD']) { mx += rx; mz += rz; }
+
+            const len = Math.sqrt(mx*mx + mz*mz);
+            if (len > 0) { mx /= len; mz /= len; }
+
+            if (this.player.flying) {
+                const speed = this.player.flySpeed;
+                this.player.vx = mx * speed;
+                this.player.vz = mz * speed;
+
+                if (this.keys['Space']) { my = 1; }
+                if (this.keys['ControlLeft'] || this.keys['ShiftLeft']) { my = -1; }
+                this.player.vy = my * speed;
+            } else {
+                const speed = this.keys['ShiftLeft'] ? this.player.sprintSpeed : this.player.walkSpeed;
+                this.player.vx = mx * speed;
+                this.player.vz = mz * speed;
+                this.player.vy -= this.player.gravity * dt;
+                this.player.vy = Math.max(this.player.vy, -50);
+            }
+
+            const newX = this.player.x + this.player.vx * dt;
+            const newY = this.player.y + this.player.vy * dt;
+            const newZ = this.player.z + this.player.vz * dt;
+
+            if (!this._checkCollision(newX, this.player.y, this.player.z)) {
+                this.player.x = newX;
+            }
+            if (!this._checkCollision(this.player.x, this.player.y, newZ)) {
+                this.player.z = newZ;
+            }
+            if (!this._checkCollision(this.player.x, newY, this.player.z)) {
+                this.player.y = newY;
+            } else {
+                if (this.player.vy < 0) this.player.onGround = true;
+                this.player.vy = 0;
+            }
+
+            this.player.onGround = this._isOnGround();
+
+            const [ex, ey, ez] = this.player.getEyePos();
+            this.engine.camera.setPosition(ex, ey, ez);
+            this.engine.camera.yaw = this.player.yaw;
+            this.engine.camera.pitch = this.player.pitch;
+        }
+
+        _updateStats() {
+            this.frameCount++;
+            const now = performance.now();
+            if (now - this.lastFpsTime >= 1000) {
+                this.fps = this.frameCount;
+                this.frameCount = 0;
+                this.lastFpsTime = now;
+            }
+
+            document.getElementById('fps').textContent = this.fps;
+            document.getElementById('frame-time').textContent = (1000 / Math.max(1, this.fps)).toFixed(1) + ' ms';
+            document.getElementById('player-pos').textContent =
+                `(${this.player.x.toFixed(0)}, ${this.player.y.toFixed(0)}, ${this.player.z.toFixed(0)})`;
+            document.getElementById('on-ground').textContent = this.player.onGround ? 'Yes' : 'No';
+            document.getElementById('flying-status').textContent = this.player.flying ? 'Yes' : 'No';
+            document.getElementById('flying-status').classList.toggle('flying', this.player.flying);
+            document.getElementById('voxel-count').textContent = this.engine.getVoxelCount().toLocaleString();
+            document.getElementById('brick-count').textContent = this.engine.getBrickCount().toLocaleString();
+            document.getElementById('memory-usage').textContent = this.engine.getMemoryUsage().totalMB.toFixed(2) + ' MB';
+        }
+
+        run() {
+            let lastTime = performance.now();
+
+            const loop = () => {
+                const now = performance.now();
+                const dt = Math.min((now - lastTime) / 1000, 0.1);
+                lastTime = now;
+
+                this._updatePlayer(dt);
+                this.engine.render();
+                this._updateStats();
+
+                requestAnimationFrame(loop);
+            };
+
+            loop();
+        }
+    }
+
+    // ============================================================
+    // Start
+    // ============================================================
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const game = new CaveGame('canvas');
+            await game.init();
+            game.run();
+        } catch (err) {
+            console.error(err);
+            document.getElementById('loading-text').textContent = 'Error: ' + err.message;
+            document.getElementById('loading-text').style.color = '#ff6b6b';
+        }
+    });
+    </script>
+</body>
+</html>
