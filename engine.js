@@ -59,6 +59,9 @@ uniform vec3 u_lanternDir;
 uniform float u_lanternIntensity;
 uniform float u_lanternConeAngle;
 
+// Water surface rendering (only top face visible)
+uniform vec3 u_waterColor;
+
 // Orb lights (up to 16)
 uniform int u_numOrbLights;
 uniform vec3 u_orbPositions[16];
@@ -190,6 +193,39 @@ bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir,
         // Check voxel
         vec4 voxel = getVoxelFromBrick(brickIndex, mapPos);
         if (voxel.a > 0.0) {
+            // Check if this is a water voxel (compare RGB with tolerance)
+            vec3 voxelRGB = voxel.rgb;
+            vec3 diff = abs(voxelRGB - u_waterColor);
+            bool isWater = (diff.r < 0.02 && diff.g < 0.02 && diff.b < 0.02);
+            
+            if (isWater) {
+                // Water voxels ALWAYS render as their top surface plane
+                // This makes water look like a thin sheet from any angle
+                result.hit = true;
+                result.color = voxel;
+                result.pos = brickMin + vec3(mapPos);
+                
+                // Always use upward-facing normal (top surface)
+                result.normal = vec3(0.0, 1.0, 0.0);
+                
+                // Calculate distance to the TOP face of this voxel (Y + 1 plane)
+                vec3 worldPos = brickMin + vec3(mapPos);
+                float topY = worldPos.y + 1.0;
+                
+                // Handle ray direction for proper intersection
+                if (abs(safeRayDir.y) > 0.001) {
+                    result.distance = (topY - rayOrigin.y) / safeRayDir.y;
+                } else {
+                    // Nearly horizontal ray - use the actual hit distance
+                    if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
+                    else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
+                    else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
+                }
+                
+                return true;
+            }
+            
+            // Non-water voxel - normal rendering
             result.hit = true;
             result.color = voxel;
             result.pos = brickMin + vec3(mapPos);
@@ -828,7 +864,8 @@ class VoxelEngine {
             lanternIntensity: 3.75,  // 50% stronger
             lanternConeAngle: 0.45,  // radians (~25 degrees)
             orbLights: [],  // Array of {pos, dir, color}
-            orbIntensity: 3.0  // 50% brighter
+            orbIntensity: 3.0,  // 50% brighter
+            waterColor: [-1, -1, -1]  // Water color for surface rendering (negative = disabled)
         };
         
         // Components
@@ -914,6 +951,7 @@ class VoxelEngine {
             u_lanternDir: gl.getUniformLocation(this.program, 'u_lanternDir'),
             u_lanternIntensity: gl.getUniformLocation(this.program, 'u_lanternIntensity'),
             u_lanternConeAngle: gl.getUniformLocation(this.program, 'u_lanternConeAngle'),
+            u_waterColor: gl.getUniformLocation(this.program, 'u_waterColor'),
             u_numOrbLights: gl.getUniformLocation(this.program, 'u_numOrbLights'),
             u_orbPositions: gl.getUniformLocation(this.program, 'u_orbPositions'),
             u_orbDirections: gl.getUniformLocation(this.program, 'u_orbDirections'),
@@ -1102,6 +1140,9 @@ class VoxelEngine {
         gl.uniform3fv(this.locations.u_lanternDir, camera.getDirection());
         gl.uniform1f(this.locations.u_lanternIntensity, this.settings.lanternIntensity);
         gl.uniform1f(this.locations.u_lanternConeAngle, this.settings.lanternConeAngle);
+
+        // Water surface color (for rendering only top face of water voxels)
+        gl.uniform3fv(this.locations.u_waterColor, this.settings.waterColor);
 
         // Orb light uniforms
         const orbLights = this.settings.orbLights;
