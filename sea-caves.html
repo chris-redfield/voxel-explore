@@ -387,7 +387,12 @@
     const SEA_LEVEL = 300;  // Y coordinate of sea surface - HIGH to allow HUGE deep caves
     const MAX_DEPTH = 280;  // Maximum depth below sea level
     const ISLAND_RADIUS = 120;  // Radius of the island
-    
+
+    // Cave system configuration
+    const CAVE_SIZE = 2;  // Number of connected cave spheres (1 = single cave, 2+ = worm structure)
+    const CAVE_RADIUS = 180;  // Radius of each cave sphere
+    const CAVE_OVERLAP = 0.25;  // How much caves overlap (0 = just touching, 0.25 = nice tunnel connection)
+
     // Water voxel color (used to identify water for collision)
     const WATER_COLOR = { r: 30, g: 90, b: 170 };
 
@@ -1167,26 +1172,48 @@
                 }
             });
 
-            // Generate underwater cave - LARGE like cave-level.html
-            progress(0.48, 'Creating underwater cave...', '');
+            // Generate underwater cave system - worm-like structure of connected spheres
+            progress(0.48, 'Creating underwater caves...', '');
             await this._delay(50);
-            
-            // Cave positioned far from island, centered deep underwater
-            // SEA_LEVEL = 300, so we have 300 blocks of depth to work with
-            // World is 1024³, center at 512, cave can extend to ~1023
-            const caveX = this.worldOffset + 330;  // Much further from island (512+330=842)
-            const caveZ = this.worldOffset;
-            const caveY = 140;  // Deep underwater center
-            const caveRadius = 180;  // ORIGINAL radius from cave-level.html
-            
-            // Cave extends from X=662 to X=1022 (fits in 1024 world)
-            // Island ends at ~668 (512 + 120*1.3)
-            // Ceiling at Y ≈ 278 (below SEA_LEVEL 300)
-            // Fully underwater!
-            
-            await this._generateCaveWithProgress(caveX, caveY, caveZ, caveRadius, progress);
-            
-            console.log(`Cave generated at (${caveX}, ${caveY}, ${caveZ}) with radius ${caveRadius}`);
+
+            // Calculate cave centers for worm structure
+            // Caves are arranged in an arc around the island
+            const caveCenters = this._calculateCaveCenters();
+
+            // Store all centers for formation generation later
+            this.caveCenters = caveCenters;
+
+            // Generate each cave sphere
+            for (let i = 0; i < caveCenters.length; i++) {
+                const cave = caveCenters[i];
+                const progressStart = 0.48 + (i / caveCenters.length) * 0.32;
+
+                progress(progressStart, `Creating cave ${i + 1}/${caveCenters.length}...`, '');
+                await this._delay(10);
+
+                await this._generateCaveWithProgress(
+                    cave.x, cave.y, cave.z, CAVE_RADIUS,
+                    progress, progressStart, progressStart + (0.32 / caveCenters.length)
+                );
+
+                console.log(`Cave ${i + 1} generated at (${cave.x}, ${cave.y}, ${cave.z})`);
+            }
+
+            // Generate formations for all caves
+            progress(0.82, 'Growing stalagmites and stalactites...', '');
+            await this._delay(10);
+            for (const cave of caveCenters) {
+                this.caveGen._generateFormations(this.engine.world, cave.x, cave.y, cave.z, CAVE_RADIUS);
+            }
+
+            // Add ground details for all caves
+            progress(0.86, 'Adding cave details...', '');
+            await this._delay(10);
+            for (const cave of caveCenters) {
+                this.caveGen._addGroundDetails(this.engine.world, cave.x, cave.y, cave.z, CAVE_RADIUS);
+            }
+
+            console.log(`Cave system generated: ${caveCenters.length} connected caves`);
 
             const genTime = performance.now();
             progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
@@ -1257,8 +1284,52 @@
 
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-        // EXACT from cave-level.html - generates cave with ceiling openings
-        async _generateCaveWithProgress(centerX, centerY, centerZ, radius, progress) {
+        // Calculate positions for connected cave spheres (worm structure)
+        _calculateCaveCenters() {
+            const centers = [];
+            const worldSize = this.engine.world.worldSize;
+
+            // Distance from island center to cave system
+            const distanceFromIsland = 330;
+
+            // Distance between cave centers (overlap controlled by CAVE_OVERLAP)
+            // At CAVE_OVERLAP=0.7, caves overlap by 30% of their radius
+            const stepDistance = CAVE_RADIUS * 2 * (1 - CAVE_OVERLAP);
+
+            // Calculate arc around the island
+            // Starting angle: pointing away from island on +X axis
+            const startAngle = 0;
+
+            // Arc step: how much angle to change between caves
+            // Smaller angle = tighter curve around island
+            const arcRadius = distanceFromIsland;
+            const arcStep = stepDistance / arcRadius;  // Radians per cave
+
+            for (let i = 0; i < CAVE_SIZE; i++) {
+                const angle = startAngle + i * arcStep;
+
+                // Position relative to island center (worldOffset)
+                const x = this.worldOffset + Math.cos(angle) * arcRadius;
+                const z = this.worldOffset + Math.sin(angle) * arcRadius;
+                const y = 140;  // Deep underwater, constant depth
+
+                // Verify cave doesn't exceed world max bounds
+                // (min bounds are handled by clipping in generation code)
+                if (x + CAVE_RADIUS < worldSize &&
+                    z + CAVE_RADIUS < worldSize &&
+                    x - CAVE_RADIUS >= 0 &&
+                    z - CAVE_RADIUS >= 0) {
+                    centers.push({ x: Math.floor(x), y, z: Math.floor(z) });
+                } else {
+                    console.warn(`Cave ${i + 1} would exceed world bounds, skipping`);
+                }
+            }
+
+            return centers;
+        }
+
+        // Generates cave shell with ceiling openings (no formations - those are added separately)
+        async _generateCaveWithProgress(centerX, centerY, centerZ, radius, progress, progressStart = 0.50, progressEnd = 0.80) {
             const world = this.engine.world;
             const minX = Math.max(0, centerX - radius);
             const maxX = Math.min(world.worldSize - 1, centerX + radius);
@@ -1341,23 +1412,14 @@
                 processed++;
                 const now = performance.now();
                 if (now - lastUpdate > 80) {
-                    const p = 0.50 + (processed / totalSlices) * 0.30;
+                    const p = progressStart + (processed / totalSlices) * (progressEnd - progressStart);
                     progress(p, `Carving cave: ${Math.floor(processed/totalSlices*100)}%`,
                         `${processed}/${totalSlices} slices`);
                     lastUpdate = now;
                     await this._delay(1);
                 }
             }
-
-            // Generate formations
-            progress(0.82, 'Growing stalagmites and stalactites...', '');
-            await this._delay(10);
-            this.caveGen._generateFormations(world, centerX, centerY, centerZ, radius);
-
-            // Add ground details (no orb lights for underwater - use flashlight)
-            progress(0.85, 'Adding cave details...', '');
-            await this._delay(10);
-            this.caveGen._addGroundDetails(world, centerX, centerY, centerZ, radius);
+            // Note: Formations and details are generated separately after all cave shells are created
         }
         
         _resize() {
