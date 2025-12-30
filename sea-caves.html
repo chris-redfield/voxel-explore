@@ -384,8 +384,8 @@
     // ============================================================
     // Constants
     // ============================================================
-    const SEA_LEVEL = 32;  // Y coordinate of sea surface
-    const MAX_DEPTH = 50;  // Maximum depth below sea level
+    const SEA_LEVEL = 150;  // Y coordinate of sea surface - HIGH to allow deep caves
+    const MAX_DEPTH = 120;  // Maximum depth below sea level
     const ISLAND_RADIUS = 120;  // Radius of the island
     
     // Water voxel color (used to identify water for collision)
@@ -693,6 +693,268 @@
         }
     }
 
+    // ============================================================
+    // Cave Generator - EXACT from cave-level.html
+    // ============================================================
+    class CaveGenerator {
+        constructor(seed = 12345) {
+            this.seed = seed;
+            this.lightOrbCount = 0;
+        }
+
+        // Simple pseudo-random number generator
+        pseudoRandom(seed) {
+            const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+            return x - Math.floor(x);
+        }
+
+        // 2D noise for terrain variation
+        noise2D(x, z, scale, seed) {
+            const nx = x * scale + seed;
+            const nz = z * scale + seed * 1.5;
+            return (Math.sin(nx) * Math.cos(nz) +
+                    Math.sin(nx * 2.1 + 0.5) * Math.cos(nz * 1.9 + 0.3) * 0.5 +
+                    Math.sin(nx * 4.3 + 1.2) * Math.cos(nz * 3.7 + 0.7) * 0.25) / 1.75;
+        }
+
+        // 3D noise for cave carving
+        noise3D(x, y, z, scale, seed) {
+            const nx = x * scale + seed;
+            const ny = y * scale + seed * 1.3;
+            const nz = z * scale + seed * 1.7;
+            return (
+                Math.sin(nx) * Math.cos(ny) * Math.sin(nz) +
+                Math.sin(nx * 2.1) * Math.cos(ny * 1.9) * Math.sin(nz * 2.3) * 0.5 +
+                Math.sin(nx * 4.2) * Math.cos(ny * 3.8) * Math.sin(nz * 4.1) * 0.25
+            ) / 1.75;
+        }
+
+        _placeRockVoxel(world, x, y, z, isFloor) {
+            const variation = this.pseudoRandom(x * 1000 + y * 100 + z);
+            let r, g, b;
+
+            if (isFloor) {
+                // Floor rocks - darker, brownish gray
+                if (variation > 0.95) {
+                    // Occasional mineral sparkle
+                    r = 180 + (variation * 50) | 0;
+                    g = 170 + (variation * 40) | 0;
+                    b = 140 + (variation * 30) | 0;
+                } else if (variation > 0.8) {
+                    // Darker patches
+                    r = 45 + (variation * 15) | 0;
+                    g = 40 + (variation * 15) | 0;
+                    b = 35 + (variation * 10) | 0;
+                } else {
+                    // Standard floor rock
+                    r = 70 + (variation * 25) | 0;
+                    g = 65 + (variation * 20) | 0;
+                    b = 55 + (variation * 20) | 0;
+                }
+            } else {
+                // Walls and ceiling - gray with hints of color
+                if (variation > 0.97) {
+                    // Crystal/mineral deposits
+                    const mineralType = (variation * 3) | 0;
+                    if (mineralType === 0) {
+                        r = 100; g = 150; b = 200; // Blue crystal
+                    } else if (mineralType === 1) {
+                        r = 200; g = 150; b = 100; // Amber
+                    } else {
+                        r = 150; g = 200; b = 150; // Green mineral
+                    }
+                } else if (variation > 0.85) {
+                    // Wet/mossy patches
+                    r = 50 + (variation * 20) | 0;
+                    g = 70 + (variation * 25) | 0;
+                    b = 50 + (variation * 15) | 0;
+                } else {
+                    // Standard rock
+                    const base = 80 + (variation * 30) | 0;
+                    r = base;
+                    g = base - 5;
+                    b = base - 10;
+                }
+            }
+
+            world.setVoxel(x, y, z, r, g, b);
+        }
+
+        _generateFormations(world, centerX, centerY, centerZ, radius) {
+            // Generate stalagmites (from floor) - scan DOWN from center to find floor
+            const numStalagmites = 80 + Math.floor(this.pseudoRandom(this.seed + 3000) * 120);
+
+            for (let i = 0; i < numStalagmites; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 50) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 50 + 25) * radius * 0.75;
+
+                const baseX = Math.floor(centerX + Math.cos(angle) * dist);
+                const baseZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Scan DOWN from center to find the floor surface
+                let foundFloor = false;
+                let floorY = centerY;
+
+                for (let y = centerY; y > centerY - radius - 20; y--) {
+                    const v = world.getVoxel(baseX, y, baseZ);
+                    if (v && v.a > 0) {
+                        // Found solid rock - the floor surface is at y+1
+                        floorY = y + 1;
+                        foundFloor = true;
+                        break;
+                    }
+                }
+
+                // Only create stalagmite if we found actual floor
+                if (foundFloor) {
+                    const height = 5 + Math.floor(this.pseudoRandom(this.seed + i * 100) * 20);
+                    const baseRadius = 2 + Math.floor(this.pseudoRandom(this.seed + i * 100 + 10) * 3);
+                    this._createStalagmite(world, baseX, floorY, baseZ, height, baseRadius);
+                }
+            }
+
+            // Generate stalactites (from ceiling) - scan UP from center to find ceiling
+            const numStalactites = 100 + Math.floor(this.pseudoRandom(this.seed + 4000) * 150);
+
+            for (let i = 0; i < numStalactites; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 70 + 1000) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 70 + 1025) * radius * 0.75;
+
+                const baseX = Math.floor(centerX + Math.cos(angle) * dist);
+                const baseZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Scan UP from center to find the ceiling surface
+                let foundCeiling = false;
+                let ceilingY = centerY;
+
+                for (let y = centerY; y < centerY + radius + 20; y++) {
+                    const v = world.getVoxel(baseX, y, baseZ);
+                    if (v && v.a > 0) {
+                        // Found solid rock - the ceiling surface is at y-1
+                        ceilingY = y - 1;
+                        foundCeiling = true;
+                        break;
+                    }
+                }
+
+                // Only create stalactite if we found actual ceiling (not an opening)
+                if (foundCeiling) {
+                    // Double-check there's solid rock directly above where we'll attach
+                    const attachCheck = world.getVoxel(baseX, ceilingY + 1, baseZ);
+                    if (attachCheck && attachCheck.a > 0) {
+                        const length = 4 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1000) * 18);
+                        const baseRadius = 1 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1010) * 2);
+                        this._createStalactite(world, baseX, ceilingY, baseZ, length, baseRadius);
+                    }
+                }
+            }
+        }
+
+        _createStalagmite(world, baseX, baseY, baseZ, height, baseRadius) {
+            for (let y = 0; y < height; y++) {
+                // Taper toward top
+                const progress = y / height;
+                const currentRadius = baseRadius * (1 - progress * 0.9);
+
+                for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+                    for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+                        const d = Math.sqrt(dx * dx + dz * dz);
+                        if (d <= currentRadius) {
+                            const wx = baseX + dx;
+                            const wy = baseY + y;
+                            const wz = baseZ + dz;
+
+                            // Color variation
+                            const v = this.pseudoRandom(wx + wy * 100 + wz);
+                            const brightness = 60 + (v * 40) | 0;
+                            const r = brightness + 10;
+                            const g = brightness + 5;
+                            const b = brightness - 5;
+
+                            world.setVoxel(wx, wy, wz, r, g, b);
+                        }
+                    }
+                }
+            }
+        }
+
+        _createStalactite(world, baseX, baseY, baseZ, length, baseRadius) {
+            for (let y = 0; y < length; y++) {
+                // Taper toward bottom
+                const progress = y / length;
+                const currentRadius = baseRadius * (1 - progress * 0.95);
+
+                for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+                    for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+                        const d = Math.sqrt(dx * dx + dz * dz);
+                        if (d <= currentRadius) {
+                            const wx = baseX + dx;
+                            const wy = baseY - y;
+                            const wz = baseZ + dz;
+
+                            // Slightly different coloring - more gray
+                            const v = this.pseudoRandom(wx + wy * 100 + wz);
+                            const brightness = 70 + (v * 35) | 0;
+                            const r = brightness;
+                            const g = brightness;
+                            const b = brightness + 5;
+
+                            world.setVoxel(wx, wy, wz, r, g, b);
+                        }
+                    }
+                }
+            }
+
+            // Add drip at bottom (optional wet look)
+            if (this.pseudoRandom(baseX + baseZ) > 0.7) {
+                world.setVoxel(baseX, baseY - length, baseZ, 100, 120, 140);
+            }
+        }
+
+        _addGroundDetails(world, centerX, centerY, centerZ, radius) {
+            // Add scattered rocks and crystals on the floor
+            const floorY = centerY - radius * 0.4;
+            const numDetails = 150 + Math.floor(this.pseudoRandom(this.seed + 7000) * 100);
+
+            for (let i = 0; i < numDetails; i++) {
+                const angle = this.pseudoRandom(this.seed + i * 60 + 7000) * Math.PI * 2;
+                const dist = this.pseudoRandom(this.seed + i * 60 + 7025) * radius * 0.8;
+
+                const detailX = Math.floor(centerX + Math.cos(angle) * dist);
+                const detailZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+                // Find floor
+                let actualFloorY = floorY;
+                for (let y = centerY; y > floorY - 20; y--) {
+                    const v = world.getVoxel(detailX, y, detailZ);
+                    if (v && v.a > 0) {
+                        actualFloorY = y + 1;
+                        break;
+                    }
+                }
+
+                const detailType = this.pseudoRandom(this.seed + i * 70 + 7050);
+
+                if (detailType > 0.8) {
+                    // Small crystal cluster
+                    const crystalColor = detailType > 0.9
+                        ? [150, 200, 255] // Blue crystal
+                        : [200, 150, 255]; // Purple crystal
+
+                    for (let dy = 0; dy < 3; dy++) {
+                        world.setVoxel(detailX, actualFloorY + dy, detailZ,
+                            crystalColor[0], crystalColor[1], crystalColor[2]);
+                    }
+                } else if (detailType > 0.5) {
+                    // Small rock
+                    const v = this.pseudoRandom(detailX + detailZ);
+                    const gray = 50 + (v * 30) | 0;
+                    world.setVoxel(detailX, actualFloorY, detailZ, gray, gray - 5, gray - 10);
+                }
+                // else nothing (keep some areas clear)
+            }
+        }
+    }
 
 
     // ============================================================
@@ -784,6 +1046,7 @@
             this.engine = new VoxelEngine(this.canvas);
             this.player = new Diver();
             this.terrain = new IslandGenerator(Math.floor(Math.random() * 100000));
+            this.caveGen = new CaveGenerator(Math.floor(Math.random() * 100000));
 
             this.worldOffset = 0;
             this.loadTime = 0;
@@ -887,12 +1150,31 @@
             this.terrain.generateWorld(this.engine.world, this.worldOffset, (p) => {
                 const now = performance.now();
                 if (now - lastUpdate > 100) {
-                    progress(0.05 + p * 0.80, 
+                    progress(0.05 + p * 0.40, 
                         `Generating terrain: ${Math.floor(p * 100)}%`,
                         '');
                     lastUpdate = now;
                 }
             });
+
+            // Generate underwater cave - LARGE like cave-level.html
+            progress(0.48, 'Creating underwater cave...', '');
+            await this._delay(50);
+            
+            // Cave positioned far from island, centered deep underwater
+            // SEA_LEVEL = 150, so we have 150 blocks of depth to work with
+            const caveX = this.worldOffset + 180;  // Far east of island
+            const caveZ = this.worldOffset;
+            const caveY = 60;  // Center deep underwater
+            const caveRadius = 100;  // LARGE radius like cave-level.html (which uses 180)
+            
+            // This will create ceiling openings starting at Y = 60 + 100*0.3 = 90
+            // Ceiling at approximately Y = 60 + 100/1.3 = 137
+            // Both are below SEA_LEVEL=150, so fully underwater!
+            
+            await this._generateCaveWithProgress(caveX, caveY, caveZ, caveRadius, progress);
+            
+            console.log(`Cave generated at (${caveX}, ${caveY}, ${caveZ}) with radius ${caveRadius}`);
 
             const genTime = performance.now();
             progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
@@ -962,6 +1244,109 @@
         }
 
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        // EXACT from cave-level.html - generates cave with ceiling openings
+        async _generateCaveWithProgress(centerX, centerY, centerZ, radius, progress) {
+            const world = this.engine.world;
+            const minX = Math.max(0, centerX - radius);
+            const maxX = Math.min(world.worldSize - 1, centerX + radius);
+            const minY = Math.max(0, centerY - radius);
+            const maxY = Math.min(world.worldSize - 1, centerY + radius);
+            const minZ = Math.max(0, centerZ - radius);
+            const maxZ = Math.min(world.worldSize - 1, centerZ + radius);
+
+            const totalSlices = maxX - minX + 1;
+            let processed = 0;
+            let lastUpdate = performance.now();
+
+            // Keep track of ceiling opening positions
+            const ceilingOpenings = [];
+            const numOpenings = 8 + Math.floor(this.caveGen.pseudoRandom(this.caveGen.seed + 5000) * 10);
+
+            for (let i = 0; i < numOpenings; i++) {
+                const angle = this.caveGen.pseudoRandom(this.caveGen.seed + i * 100) * Math.PI * 2;
+                const dist = this.caveGen.pseudoRandom(this.caveGen.seed + i * 100 + 50) * radius * 0.6;
+                const openingRadius = 10 + this.caveGen.pseudoRandom(this.caveGen.seed + i * 200) * 20;
+
+                ceilingOpenings.push({
+                    x: centerX + Math.cos(angle) * dist,
+                    z: centerZ + Math.sin(angle) * dist,
+                    radius: openingRadius
+                });
+            }
+
+            // Generate cave shell
+            for (let x = minX; x <= maxX; x++) {
+                for (let z = minZ; z <= maxZ; z++) {
+                    for (let y = minY; y <= maxY; y++) {
+                        const dx = x - centerX;
+                        const dy = y - centerY;
+                        const dz = z - centerZ;
+
+                        // Ellipsoid shape - wider than tall
+                        const distXZ = Math.sqrt(dx * dx + dz * dz);
+                        const distY = Math.abs(dy) * 1.3;
+                        const dist = Math.sqrt(distXZ * distXZ + distY * distY);
+
+                        // Add noise for irregular shape
+                        const noise = this.caveGen.noise3D(x, y, z, 0.025, this.caveGen.seed) * 35;
+                        const wallNoise = this.caveGen.noise3D(x, y, z, 0.07, this.caveGen.seed + 1000) * 18;
+
+                        const effectiveRadius = radius + noise + wallNoise;
+
+                        // Check if in ceiling opening area
+                        let inOpening = false;
+                        if (y > centerY + radius * 0.3) { // Upper part of cave
+                            for (const opening of ceilingOpenings) {
+                                const openDist = Math.sqrt(
+                                    Math.pow(x - opening.x, 2) +
+                                    Math.pow(z - opening.z, 2)
+                                );
+                                if (openDist < opening.radius) {
+                                    // Fade out based on distance from edge and height
+                                    const edgeFactor = openDist / opening.radius;
+                                    const heightFactor = (y - (centerY + radius * 0.3)) / (radius * 0.4);
+                                    if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
+                                        inOpening = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (dist < effectiveRadius && !inOpening) {
+                            // Shell thickness
+                            const shellThickness = 10 + this.caveGen.noise3D(x, y, z, 0.04, this.caveGen.seed + 2000) * 6;
+
+                            if (dist > effectiveRadius - shellThickness) {
+                                // Place cave wall
+                                this.caveGen._placeRockVoxel(world, x, y, z, y < centerY);
+                            }
+                        }
+                    }
+                }
+
+                processed++;
+                const now = performance.now();
+                if (now - lastUpdate > 80) {
+                    const p = 0.50 + (processed / totalSlices) * 0.30;
+                    progress(p, `Carving cave: ${Math.floor(processed/totalSlices*100)}%`,
+                        `${processed}/${totalSlices} slices`);
+                    lastUpdate = now;
+                    await this._delay(1);
+                }
+            }
+
+            // Generate formations
+            progress(0.82, 'Growing stalagmites and stalactites...', '');
+            await this._delay(10);
+            this.caveGen._generateFormations(world, centerX, centerY, centerZ, radius);
+
+            // Add ground details (no orb lights for underwater - use flashlight)
+            progress(0.85, 'Adding cave details...', '');
+            await this._delay(10);
+            this.caveGen._addGroundDetails(world, centerX, centerY, centerZ, radius);
+        }
         
         _resize() {
             const c = this.canvas.parentElement;
@@ -1152,29 +1537,29 @@
             document.getElementById('depth-meter').classList.toggle('visible', underwater);
             
             if (underwater) {
-                // Calculate depth-based parameters
-                const depthFactor = Math.min(depth / MAX_DEPTH, 1.0);
+                // Calculate depth-based parameters (clamp between 0 and 1)
+                const depthFactor = Math.max(0, Math.min(depth / MAX_DEPTH, 1.0));
                 
                 // Fog increases with depth (water absorbs light)
                 const fogDensity = 2.0 + depthFactor * 6.0;
                 this.engine.settings.fogDensity = fogDensity;
                 
                 // Sky color becomes darker/bluer with depth
-                // Near surface: bright blue-green
-                // Deep: dark blue
+                // Near surface: bright blue-green, Deep: very dark (almost black)
+                // Use Math.max to ensure no negative values
                 const topR = 0.0;
-                const topG = 0.2 - depthFactor * 0.15;
-                const topB = 0.4 - depthFactor * 0.2;
+                const topG = Math.max(0, 0.15 * (1.0 - depthFactor));
+                const topB = Math.max(0, 0.25 * (1.0 - depthFactor * 0.8));
                 
                 const botR = 0.0;
-                const botG = 0.1 - depthFactor * 0.08;
-                const botB = 0.2 - depthFactor * 0.1;
+                const botG = Math.max(0, 0.08 * (1.0 - depthFactor));
+                const botB = Math.max(0, 0.12 * (1.0 - depthFactor * 0.8));
                 
                 this.engine.settings.skyColorTop = [topR, topG, topB];
                 this.engine.settings.skyColorBottom = [botR, botG, botB];
                 
                 // Reduce shadow intensity underwater
-                this.engine.settings.enableShadows = depth < 15;
+                this.engine.settings.enableShadows = depth < 20;
                 
                 // Update depth meter display
                 const meterPercent = Math.min(depth / MAX_DEPTH, 1.0);
