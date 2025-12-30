@@ -1569,10 +1569,11 @@
                 
                 this.engine.settings.skyColorTop = [topR, topG, topB];
                 this.engine.settings.skyColorBottom = [botR, botG, botB];
-                
-                // Reduce shadow intensity underwater
-                this.engine.settings.enableShadows = depth < 20;
-                
+
+                // Keep shadows enabled underwater for consistent lighting
+                // (fog already handles visibility reduction at depth)
+                this.engine.settings.enableShadows = true;
+
                 // Update depth meter display
                 const meterPercent = Math.min(depth / MAX_DEPTH, 1.0);
                 document.getElementById('depth-fill').style.height = (meterPercent * 100) + '%';
