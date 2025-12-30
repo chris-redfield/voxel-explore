@@ -384,8 +384,8 @@
     // ============================================================
     // Constants
     // ============================================================
-    const SEA_LEVEL = 150;  // Y coordinate of sea surface - HIGH to allow deep caves
-    const MAX_DEPTH = 120;  // Maximum depth below sea level
+    const SEA_LEVEL = 300;  // Y coordinate of sea surface - HIGH to allow HUGE deep caves
+    const MAX_DEPTH = 280;  // Maximum depth below sea level
     const ISLAND_RADIUS = 120;  // Radius of the island
     
     // Water voxel color (used to identify water for collision)
@@ -1134,7 +1134,7 @@
             await this._delay(50);
 
             // Create world: 64 coarse = 512³ voxels
-            this.engine.createWorld(64, 8);
+            this.engine.createWorld(128, 8);  // 128*8 = 1024³ world to fit large cave
             this.worldOffset = Math.floor(this.engine.world.worldSize / 2);
 
             document.getElementById('world-size').textContent = 
@@ -1162,15 +1162,17 @@
             await this._delay(50);
             
             // Cave positioned far from island, centered deep underwater
-            // SEA_LEVEL = 150, so we have 150 blocks of depth to work with
-            const caveX = this.worldOffset + 180;  // Far east of island
+            // SEA_LEVEL = 300, so we have 300 blocks of depth to work with
+            // World is 1024³, center at 512, cave can extend to ~1023
+            const caveX = this.worldOffset + 330;  // Much further from island (512+330=842)
             const caveZ = this.worldOffset;
-            const caveY = 60;  // Center deep underwater
-            const caveRadius = 100;  // LARGE radius like cave-level.html (which uses 180)
+            const caveY = 140;  // Deep underwater center
+            const caveRadius = 180;  // ORIGINAL radius from cave-level.html
             
-            // This will create ceiling openings starting at Y = 60 + 100*0.3 = 90
-            // Ceiling at approximately Y = 60 + 100/1.3 = 137
-            // Both are below SEA_LEVEL=150, so fully underwater!
+            // Cave extends from X=662 to X=1022 (fits in 1024 world)
+            // Island ends at ~668 (512 + 120*1.3)
+            // Ceiling at Y ≈ 278 (below SEA_LEVEL 300)
+            // Fully underwater!
             
             await this._generateCaveWithProgress(caveX, caveY, caveZ, caveRadius, progress);
             
