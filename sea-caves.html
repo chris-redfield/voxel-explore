@@ -708,6 +708,15 @@
             return x - Math.floor(x);
         }
 
+        // Check if a voxel is a water voxel (used to avoid placing formations on water)
+        _isWaterVoxel(v) {
+            if (!v || v.a === 0) return false;
+            // Water voxels have specific color: r=30, g=90, b=170
+            return v.r >= 25 && v.r <= 40 &&
+                   v.g >= 80 && v.g <= 100 &&
+                   v.b >= 160 && v.b <= 180;
+        }
+
         // 2D noise for terrain variation
         noise2D(x, z, scale, seed) {
             const nx = x * scale + seed;
@@ -829,7 +838,8 @@
 
                 for (let y = centerY; y < centerY + radius + 20; y++) {
                     const v = world.getVoxel(baseX, y, baseZ);
-                    if (v && v.a > 0) {
+                    // Skip water voxels - they are not valid ceiling surfaces
+                    if (v && v.a > 0 && !this._isWaterVoxel(v)) {
                         // Found solid rock - the ceiling surface is at y-1
                         ceilingY = y - 1;
                         foundCeiling = true;
@@ -837,11 +847,11 @@
                     }
                 }
 
-                // Only create stalactite if we found actual ceiling (not an opening)
+                // Only create stalactite if we found actual ceiling (not an opening or water)
                 if (foundCeiling) {
-                    // Double-check there's solid rock directly above where we'll attach
+                    // Double-check there's solid rock directly above where we'll attach (not water)
                     const attachCheck = world.getVoxel(baseX, ceilingY + 1, baseZ);
-                    if (attachCheck && attachCheck.a > 0) {
+                    if (attachCheck && attachCheck.a > 0 && !this._isWaterVoxel(attachCheck)) {
                         const length = 4 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1000) * 18);
                         const baseRadius = 1 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1010) * 2);
                         this._createStalactite(world, baseX, ceilingY, baseZ, length, baseRadius);
