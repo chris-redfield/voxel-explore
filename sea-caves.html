@@ -393,6 +393,12 @@
     const CAVE_RADIUS = 180;  // Radius of each cave sphere
     const CAVE_OVERLAP = 0.25;  // How much caves overlap (0 = just touching, 0.25 = nice tunnel connection)
 
+    // Player speed configuration (easy to tweak)
+    const SWIM_SPEED = 20;       // Base swimming speed (was 4)
+    const FAST_SWIM_SPEED = 28;  // Sprint swimming speed with Shift
+    const WALK_SPEED = 5;        // Walking speed on land
+    const SPRINT_SPEED = 8;      // Sprinting speed on land
+
     // Water voxel color (used to identify water for collision)
     const WATER_COLOR = { r: 30, g: 90, b: 170 };
 
@@ -984,14 +990,14 @@
             this.onGround = false;
             
             // Surface movement
-            this.walkSpeed = 5;
-            this.sprintSpeed = 8;
+            this.walkSpeed = WALK_SPEED;
+            this.sprintSpeed = SPRINT_SPEED;
             this.jumpForce = 7;
             this.gravity = 20;
-            
+
             // Underwater movement (swim mode)
-            this.swimSpeed = 4;
-            this.fastSwimSpeed = 7;
+            this.swimSpeed = SWIM_SPEED;
+            this.fastSwimSpeed = FAST_SWIM_SPEED;
             this.surfaceBoost = 12;  // Strong upward boost to breach surface
             
             this.isUnderwater = false;
@@ -1199,6 +1205,13 @@
                 console.log(`Cave ${i + 1} generated at (${cave.x}, ${cave.y}, ${cave.z})`);
             }
 
+            // Carve connecting tunnels between adjacent caves
+            if (caveCenters.length > 1) {
+                progress(0.81, 'Carving connecting tunnels...', '');
+                await this._delay(10);
+                this._carveConnectingTunnels(caveCenters);
+            }
+
             // Generate formations for all caves
             progress(0.82, 'Growing stalagmites and stalactites...', '');
             await this._delay(10);
@@ -1326,6 +1339,68 @@
             }
 
             return centers;
+        }
+
+        // Carve connecting tunnels between adjacent caves
+        _carveConnectingTunnels(caveCenters) {
+            const world = this.engine.world;
+            const tunnelRadius = 35;  // Large enough for comfortable swimming
+
+            for (let i = 0; i < caveCenters.length - 1; i++) {
+                const cave1 = caveCenters[i];
+                const cave2 = caveCenters[i + 1];
+
+                // Direction vector from cave1 to cave2
+                const dx = cave2.x - cave1.x;
+                const dy = cave2.y - cave1.y;
+                const dz = cave2.z - cave1.z;
+                const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                // Normalized direction
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const nz = dz / dist;
+
+                // Carve a cylindrical tunnel through BOTH cave shells
+                // Cave shells are at ~(CAVE_RADIUS - 16) to CAVE_RADIUS from their centers
+                // We need to carve from before cave2's shell to after cave1's shell
+                const shellThickness = 20;  // Buffer for shell + noise variations
+                const startDist = dist - CAVE_RADIUS - shellThickness;  // Before cave2's outer shell
+                const endDist = CAVE_RADIUS + shellThickness;  // After cave1's outer shell
+
+                // Step along the tunnel
+                const stepSize = 2;
+                for (let t = startDist; t <= endDist; t += stepSize) {
+                    // Center point of this tunnel slice
+                    const cx = cave1.x + nx * t;
+                    const cy = cave1.y + ny * t;
+                    const cz = cave1.z + nz * t;
+
+                    // Carve a circular opening perpendicular to tunnel direction
+                    for (let rx = -tunnelRadius; rx <= tunnelRadius; rx++) {
+                        for (let ry = -tunnelRadius; ry <= tunnelRadius; ry++) {
+                            for (let rz = -tunnelRadius; rz <= tunnelRadius; rz++) {
+                                const r = Math.sqrt(rx * rx + ry * ry + rz * rz);
+                                if (r <= tunnelRadius) {
+                                    const vx = Math.floor(cx + rx);
+                                    const vy = Math.floor(cy + ry);
+                                    const vz = Math.floor(cz + rz);
+
+                                    // Only clear if within world bounds
+                                    if (vx >= 0 && vx < world.worldSize &&
+                                        vy >= 0 && vy < world.worldSize &&
+                                        vz >= 0 && vz < world.worldSize) {
+                                        // Clear the voxel (set to air)
+                                        world.setVoxel(vx, vy, vz, 0, 0, 0, 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                console.log(`Carved tunnel between cave ${i + 1} and ${i + 2}`);
+            }
         }
 
         // Generates cave shell with ceiling openings (no formations - those are added separately)
