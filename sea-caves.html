@@ -1022,7 +1022,7 @@
             const cp = Math.cos(this.pitch);
             return [
                 Math.sin(this.yaw) * cp,
-                -Math.sin(this.pitch),
+                Math.sin(this.pitch),  // Positive pitch = looking up = move up when pressing W
                 Math.cos(this.yaw) * cp
             ];
         }
