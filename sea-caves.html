@@ -933,9 +933,9 @@
                 const detailX = Math.floor(centerX + Math.cos(angle) * dist);
                 const detailZ = Math.floor(centerZ + Math.sin(angle) * dist);
 
-                // Find floor
+                // Find floor - scan down using same range as stalagmites
                 let actualFloorY = floorY;
-                for (let y = centerY; y > floorY - 20; y--) {
+                for (let y = centerY; y > centerY - radius - 20; y--) {
                     const v = world.getVoxel(detailX, y, detailZ);
                     if (v && v.a > 0) {
                         actualFloorY = y + 1;
