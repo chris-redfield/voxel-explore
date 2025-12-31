@@ -201,8 +201,20 @@ bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir,
             bool isWater = (diff.r < 0.02 && diff.g < 0.02 && diff.b < 0.02);
             
             if (isWater && safeRayDir.y > 0.0) {
-                // Water voxel viewed from below - make it invisible
-                // Don't register hit, let DDA continue to next voxel
+                // Water voxel viewed from below - semi-transparent with lens effect
+                // Mark that we passed through water (from below) and continue
+                if (!result.passedThroughWater) {
+                    result.passedThroughWater = true;
+                    vec3 worldPos = brickMin + vec3(mapPos);
+                    // Distance to bottom face of water voxel
+                    float bottomY = worldPos.y;
+                    if (abs(safeRayDir.y) > 0.001) {
+                        result.waterDistance = (bottomY - rayOrigin.y) / safeRayDir.y;
+                    } else {
+                        result.waterDistance = length(worldPos + 0.5 - rayOrigin);
+                    }
+                }
+                // Continue DDA to find what's above the water
             } else if (isWater) {
                 // Water voxel viewed from above - make semi-transparent
                 // Mark that we passed through water and record distance
