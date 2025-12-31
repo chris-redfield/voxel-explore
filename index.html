@@ -74,12 +74,19 @@
             right: 0;
             bottom: 0;
             pointer-events: none;
-            background: radial-gradient(ellipse at center, transparent 40%, rgba(0, 80, 120, 0.15) 100%);
+            background:
+                radial-gradient(ellipse at center, transparent 30%, rgba(0, 60, 100, 0.25) 100%),
+                linear-gradient(to bottom, rgba(0, 100, 180, 0.15) 0%, rgba(0, 40, 80, 0.3) 100%);
             opacity: 0;
             transition: opacity 0.5s ease;
         }
         #underwater-overlay.active {
             opacity: 1;
+        }
+        #underwater-overlay.deep {
+            background:
+                radial-gradient(ellipse at center, transparent 20%, rgba(0, 40, 80, 0.4) 100%),
+                linear-gradient(to bottom, rgba(0, 60, 120, 0.25) 0%, rgba(0, 20, 50, 0.5) 100%);
         }
 
         /* Depth meter */
@@ -1680,41 +1687,65 @@
         _updateEnvironmentRendering() {
             const underwater = this.player.isUnderwater;
             const depth = this.player.depth;
-            
+
             // Update underwater overlay
-            document.getElementById('underwater-overlay').classList.toggle('active', underwater);
+            const overlay = document.getElementById('underwater-overlay');
+            overlay.classList.toggle('active', underwater);
+            overlay.classList.toggle('deep', underwater && depth > 15);
             document.getElementById('depth-meter').classList.toggle('visible', underwater);
-            
+
             if (underwater) {
-                // Calculate depth-based parameters (clamp between 0 and 1)
-                const depthFactor = Math.max(0, Math.min(depth / MAX_DEPTH, 1.0));
-                
+                // Transition zone: first 5m stays relatively bright, then darkens
+                const TRANSITION_DEPTH = 5.0;
+                const transitionFactor = Math.max(0, Math.min((depth - TRANSITION_DEPTH) / (MAX_DEPTH - TRANSITION_DEPTH), 1.0));
+                const shallowFactor = Math.max(0, Math.min(depth / TRANSITION_DEPTH, 1.0));
+
                 // Fog increases with depth (water absorbs light)
-                const fogDensity = 2.0 + depthFactor * 6.0;
+                // Start with lighter fog near surface
+                const fogDensity = 1.0 + shallowFactor * 1.5 + transitionFactor * 5.5;
                 this.engine.settings.fogDensity = fogDensity;
-                
-                // Sky color becomes darker/bluer with depth
-                // Near surface: bright blue-green, Deep: very dark (almost black)
-                // Use Math.max to ensure no negative values
-                const topR = 0.0;
-                const topG = Math.max(0, 0.15 * (1.0 - depthFactor));
-                const topB = Math.max(0, 0.25 * (1.0 - depthFactor * 0.8));
-                
-                const botR = 0.0;
-                const botG = Math.max(0, 0.08 * (1.0 - depthFactor));
-                const botB = Math.max(0, 0.12 * (1.0 - depthFactor * 0.8));
-                
+
+                // Sky color: blend from surface colors to underwater colors
+                // Surface: [0.4, 0.7, 1.0] -> Shallow underwater: [0.2, 0.5, 0.8] -> Deep: very dark
+                const surfaceTop = [0.4, 0.7, 1.0];
+                const shallowTop = [0.15, 0.4, 0.7];
+                const deepTop = [0.0, 0.05, 0.12];
+
+                const surfaceBot = [0.7, 0.85, 1.0];
+                const shallowBot = [0.1, 0.35, 0.6];
+                const deepBot = [0.0, 0.02, 0.06];
+
+                // First blend surface -> shallow, then shallow -> deep
+                let topR, topG, topB, botR, botG, botB;
+
+                if (depth < TRANSITION_DEPTH) {
+                    // Blend surface to shallow
+                    topR = surfaceTop[0] + (shallowTop[0] - surfaceTop[0]) * shallowFactor;
+                    topG = surfaceTop[1] + (shallowTop[1] - surfaceTop[1]) * shallowFactor;
+                    topB = surfaceTop[2] + (shallowTop[2] - surfaceTop[2]) * shallowFactor;
+                    botR = surfaceBot[0] + (shallowBot[0] - surfaceBot[0]) * shallowFactor;
+                    botG = surfaceBot[1] + (shallowBot[1] - surfaceBot[1]) * shallowFactor;
+                    botB = surfaceBot[2] + (shallowBot[2] - surfaceBot[2]) * shallowFactor;
+                } else {
+                    // Blend shallow to deep
+                    topR = shallowTop[0] + (deepTop[0] - shallowTop[0]) * transitionFactor;
+                    topG = shallowTop[1] + (deepTop[1] - shallowTop[1]) * transitionFactor;
+                    topB = shallowTop[2] + (deepTop[2] - shallowTop[2]) * transitionFactor;
+                    botR = shallowBot[0] + (deepBot[0] - shallowBot[0]) * transitionFactor;
+                    botG = shallowBot[1] + (deepBot[1] - shallowBot[1]) * transitionFactor;
+                    botB = shallowBot[2] + (deepBot[2] - shallowBot[2]) * transitionFactor;
+                }
+
                 this.engine.settings.skyColorTop = [topR, topG, topB];
                 this.engine.settings.skyColorBottom = [botR, botG, botB];
 
                 // Keep shadows enabled underwater for consistent lighting
-                // (fog already handles visibility reduction at depth)
                 this.engine.settings.enableShadows = true;
 
                 // Update depth meter display
                 const meterPercent = Math.min(depth / MAX_DEPTH, 1.0);
                 document.getElementById('depth-fill').style.height = (meterPercent * 100) + '%';
-                document.getElementById('depth-marker').style.bottom = 
+                document.getElementById('depth-marker').style.bottom =
                     (100 - meterPercent * 100) + 'px';
             } else {
                 // Above water - bright sky

@@ -132,6 +132,8 @@ struct HitResult {
     vec4 color;
     float distance;
     int steps;
+    bool passedThroughWater;
+    float waterDistance;
 };
 
 // DDA through a single brick
@@ -198,51 +200,43 @@ bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir,
             vec3 diff = abs(voxelRGB - u_waterColor);
             bool isWater = (diff.r < 0.02 && diff.g < 0.02 && diff.b < 0.02);
             
-            if (isWater) {
-                // Water voxels ALWAYS render as their top surface plane
-                // This makes water look like a thin sheet from any angle
+            if (isWater && safeRayDir.y > 0.0) {
+                // Water voxel viewed from below - make it invisible
+                // Don't register hit, let DDA continue to next voxel
+            } else if (isWater) {
+                // Water voxel viewed from above - make semi-transparent
+                // Mark that we passed through water and record distance
+                if (!result.passedThroughWater) {
+                    result.passedThroughWater = true;
+                    vec3 worldPos = brickMin + vec3(mapPos);
+                    float topY = worldPos.y + 1.0;
+                    if (abs(safeRayDir.y) > 0.001) {
+                        result.waterDistance = (topY - rayOrigin.y) / safeRayDir.y;
+                    } else {
+                        result.waterDistance = length(worldPos + 0.5 - rayOrigin);
+                    }
+                }
+                // Continue DDA to find what's behind/below the water
+            } else {
+                // Non-water voxel - normal rendering
                 result.hit = true;
                 result.color = voxel;
                 result.pos = brickMin + vec3(mapPos);
-                
-                // Always use upward-facing normal (top surface)
-                result.normal = vec3(0.0, 1.0, 0.0);
-                
-                // Calculate distance to the TOP face of this voxel (Y + 1 plane)
+
+                // Normal based on side
+                result.normal = vec3(0.0);
+                if (side == 0) result.normal.x = -float(step.x);
+                else if (side == 1) result.normal.y = -float(step.y);
+                else result.normal.z = -float(step.z);
+
+                // Distance calculation
                 vec3 worldPos = brickMin + vec3(mapPos);
-                float topY = worldPos.y + 1.0;
-                
-                // Handle ray direction for proper intersection
-                if (abs(safeRayDir.y) > 0.001) {
-                    result.distance = (topY - rayOrigin.y) / safeRayDir.y;
-                } else {
-                    // Nearly horizontal ray - use the actual hit distance
-                    if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
-                    else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
-                    else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
-                }
-                
+                if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
+                else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
+                else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
+
                 return true;
             }
-            
-            // Non-water voxel - normal rendering
-            result.hit = true;
-            result.color = voxel;
-            result.pos = brickMin + vec3(mapPos);
-            
-            // Normal based on side
-            result.normal = vec3(0.0);
-            if (side == 0) result.normal.x = -float(step.x);
-            else if (side == 1) result.normal.y = -float(step.y);
-            else result.normal.z = -float(step.z);
-            
-            // Distance calculation
-            vec3 worldPos = brickMin + vec3(mapPos);
-            if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
-            else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
-            else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
-            
-            return true;
         }
         
         // DDA step
@@ -285,6 +279,8 @@ HitResult traceRay(vec3 origin, vec3 direction) {
     result.hit = false;
     result.steps = 0;
     result.normal = vec3(0.0);
+    result.passedThroughWater = false;
+    result.waterDistance = 0.0;
     
     vec3 worldSize = getWorldSize();
     
@@ -529,7 +525,34 @@ void main() {
     } else {
         color = mix(u_skyColorTop, u_skyColorBottom, v_uv.y);
     }
-    
+
+    // Water surface lens effect - apply when ray passed through water from above
+    if (hit.passedThroughWater) {
+        // Water tint color (slightly cyan/blue)
+        vec3 waterTint = vec3(0.3, 0.6, 0.8);
+
+        // Fresnel-like effect: more tint when looking at shallow angles
+        float viewAngle = abs(rayDir.y);  // 1.0 = looking straight down, 0.0 = horizontal
+        float fresnelFactor = 1.0 - viewAngle;  // More effect at shallow angles
+        fresnelFactor = fresnelFactor * fresnelFactor;  // Square for smoother falloff
+
+        // Base water tint amount (20% at steep angles, up to 45% at shallow angles)
+        float tintAmount = 0.2 + fresnelFactor * 0.25;
+
+        // Slight darkening to simulate light absorption
+        float absorption = 0.95;
+
+        // Apply water lens effect
+        color = mix(color * absorption, waterTint, tintAmount);
+
+        // Add subtle caustic-like brightness variation based on world position
+        if (hit.hit) {
+            float caustic = sin(hit.pos.x * 0.5) * sin(hit.pos.z * 0.5) * 0.5 + 0.5;
+            caustic = caustic * 0.1 + 0.95;  // Range: 0.95 to 1.05
+            color *= caustic;
+        }
+    }
+
     fragColor = vec4(color, 1.0);
 }
 `;
