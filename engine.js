@@ -538,21 +538,36 @@ void main() {
         color = mix(u_skyColorTop, u_skyColorBottom, v_uv.y);
     }
 
-    // Water surface lens effect - apply when ray passed through water from above
+    // Water surface lens effect - apply when ray passed through water
     if (hit.passedThroughWater) {
         // Water tint color (slightly cyan/blue)
-        vec3 waterTint = vec3(0.3, 0.6, 0.8);
+        vec3 waterTint = vec3(0.2, 0.5, 0.7);
 
         // Fresnel-like effect: more tint when looking at shallow angles
         float viewAngle = abs(rayDir.y);  // 1.0 = looking straight down, 0.0 = horizontal
         float fresnelFactor = 1.0 - viewAngle;  // More effect at shallow angles
         fresnelFactor = fresnelFactor * fresnelFactor;  // Square for smoother falloff
 
-        // Base water tint amount (20% at steep angles, up to 45% at shallow angles)
-        float tintAmount = 0.2 + fresnelFactor * 0.25;
+        // Distance-based opacity: further objects get more tint (water absorbs light)
+        float underwaterDist = 0.0;
+        if (hit.hit) {
+            underwaterDist = max(0.0, hit.distance - hit.waterDistance);
+        } else {
+            // Looking at sky through water - use a moderate distance
+            underwaterDist = 50.0;
+        }
+        // Normalize distance (objects beyond ~150 units are fully tinted)
+        float distanceFactor = clamp(underwaterDist / 150.0, 0.0, 1.0);
+        // Smooth curve for more natural falloff
+        distanceFactor = distanceFactor * distanceFactor;
 
-        // Slight darkening to simulate light absorption
-        float absorption = 0.95;
+        // Base water tint: 15% close up, up to 85% far away
+        // Plus fresnel adds up to 20% more at shallow angles
+        float tintAmount = 0.15 + distanceFactor * 0.70 + fresnelFactor * 0.15;
+        tintAmount = min(tintAmount, 0.95);  // Cap at 95% to always see something
+
+        // Light absorption increases with distance
+        float absorption = 1.0 - distanceFactor * 0.3;  // 100% to 70%
 
         // Apply water lens effect
         color = mix(color * absorption, waterTint, tintAmount);
