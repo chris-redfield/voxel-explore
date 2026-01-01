@@ -4,7 +4,7 @@ A WebGL2-powered voxel exploration game engine featuring ray-traced rendering, p
 
 ## Game Levels
 
-### Sea Caves (`sea-caves.html`)
+### Sea Caves (`index.html`)
 An underwater exploration game featuring:
 - **Tropical island** with Minecraft-style terrain, trees, and flowers
 - **Underwater cave system** with stalactites and stalagmites
@@ -12,6 +12,15 @@ An underwater exploration game featuring:
 - **Dynamic visibility** - fog increases with depth
 - **Flashlight** for exploring dark underwater caves
 - **Coral and seaweed** decorations on the seafloor
+
+#### Island Structures
+- **Cabin** - A hollow wooden cabin with door and windows, located on the west side of the island
+- **Lighthouse** - Striped lighthouse with spiral stairs on the east side of the island
+
+#### Underwater Discoveries
+- **Pirate Ship** - A sunken ship resting on the seafloor
+- **Ancient Stonegate** - Mysterious ruins near the ship
+- **Roman Poles** - Ancient columns, one standing upright, one fallen
 
 ### Floating Asteroid Cave (`cave-level.html`)
 A floating cave in the sky with:
@@ -28,7 +37,7 @@ Classic procedural terrain with:
 
 ## Engine Features
 
-### Rendering (`engine.js`)
+### Rendering (`game/engine.js`)
 - **GPU ray-traced voxel rendering** using WebGL2 fragment shaders
 - **Brick Map Hierarchy** - 2-level spatial structure for efficient ray traversal
   - Coarse grid (e.g., 64x64x64) stores brick indices
@@ -60,38 +69,106 @@ Example: 64 coarse x 8 brick = 512 voxels per axis
 
 ```
 voxel-explore/
-├── engine.js              # Core voxel engine (WebGL2 rendering)
-├── sea-caves.html         # Underwater cave exploration level
-├── cave-level.html        # Floating asteroid cave level
-├── minecraft-game2.html   # Classic terrain level
-└── README.md              # This file
+├── index.html                 # Main game (Sea Caves)
+├── game/                      # Game logic modules
+│   ├── engine.js              # Core voxel engine (WebGL2 rendering)
+│   ├── game.js                # Main game class and initialization
+│   ├── player.js              # Player/Diver movement and physics
+│   ├── config.js              # Game configuration constants
+│   ├── cache.js               # IndexedDB cache for cave templates
+│   └── generators/            # Procedural generation
+│       ├── island.js          # Island terrain generator
+│       └── cave.js            # Cave system generator
+├── assets/                    # 3D models and voxel data
+│   ├── cabin.obj/mtl/json     # Hollow cabin with door and windows
+│   ├── ship.obj/mtl/json      # Pirate ship
+│   ├── lighthouse.json        # Striped lighthouse
+│   ├── lighthouse_stairs.json # Spiral staircase
+│   ├── stonegate.json         # Ancient ruins
+│   └── roman-pole.json        # Roman column
+├── utils/                     # Asset creation utilities
+│   ├── voxelize.py            # OBJ to voxel converter
+│   ├── generate_spiral_stairs.py
+│   └── stripe_lighthouse.py
+└── README.md
 ```
 
 ### Key Classes
 
-#### `VoxelEngine` (engine.js)
+#### `VoxelEngine` (game/engine.js)
 Main rendering engine that handles:
 - WebGL2 context and shader compilation
 - Brick map texture management
 - Camera and uniform updates
 - Frame rendering
 
-#### `BrickMapWorld` (engine.js)
+#### `BrickMapWorld` (game/engine.js)
 Voxel storage using sparse brick map:
 - `setVoxel(x, y, z, r, g, b)` - Place a colored voxel
 - `getVoxel(x, y, z)` - Read voxel data
 - Automatic brick allocation on first write
 - Incremental GPU upload for modified bricks
 
-#### `CaveGenerator` (in level files)
-Procedural cave generation (see [Cave Generation Algorithm](#cave-generation-algorithm) for details)
+#### `SeaCaveGame` (game/game.js)
+Main game class that handles:
+- World initialization and terrain generation
+- Loading and placing voxel models
+- Player input and physics
+- Environment rendering (underwater effects, fog, lighting)
 
-#### `IslandGenerator` (sea-caves.html)
+#### `Diver` (game/player.js)
+Player controller with:
+- Surface walking physics (gravity, jumping)
+- Underwater 3D swimming
+- Automatic environment detection (underwater/surface)
+
+#### `IslandGenerator` (game/generators/island.js)
 Minecraft-style terrain:
 - 2D noise for height map
 - Island shape with beach falloff
 - Tree and flower placement
 - Underwater coral/seaweed
+
+#### `CaveGenerator` (game/generators/cave.js)
+Procedural cave generation with:
+- Ellipsoid cave shells with 3D noise
+- Ceiling openings for light shafts
+- Stalactites and stalagmites
+- Ground details (crystals, rocks)
+
+## Utilities
+
+### OBJ to Voxel Converter (`utils/voxelize.py`)
+Converts 3D OBJ models to voxel format for use in the game engine.
+
+```bash
+# Basic usage
+python voxelize.py model.obj -r 64 -o model.json
+
+# Make model hollow (for buildings)
+python voxelize.py cabin.obj -r 32 --hollow -o cabin.json
+
+# Exclude specific materials
+python voxelize.py ship.obj -r 48 --exclude sails -o ship.json
+
+# Override color
+python voxelize.py pillar.obj -r 24 --color 128,128,128 -o pillar.json
+
+# Rotate model
+python voxelize.py model.obj -r 32 --rotate-y 90 -o model.json
+```
+
+#### Options
+| Option | Description |
+|--------|-------------|
+| `-r, --resolution` | Voxel grid resolution (default: 64) |
+| `-o, --output` | Output JSON file path |
+| `-e, --exclude` | Material names to exclude |
+| `-i, --include-objects` | Only include specific objects |
+| `--color R,G,B` | Override all voxel colors |
+| `--rotate-y DEGREES` | Rotate model around Y axis |
+| `--hollow` | Remove interior voxels (keep only shell) |
+| `--compact` | Output compact array format |
 
 ## Technical Details
 
@@ -111,6 +188,20 @@ The engine renders only the top face of water voxels for a flat surface effect.
 - Coarse grid: `coarseSize^3 x 4 bytes`
 - Per brick: `8^3 x 4 = 2KB`
 - Only occupied regions allocate memory (sparse storage)
+
+### Voxel Model Format
+Models are stored as JSON with the following structure:
+```json
+{
+  "resolution": 48,
+  "gridSize": { "x": 28, "y": 16, "z": 29 },
+  "voxelCount": 4097,
+  "voxels": [
+    { "x": 0, "y": 0, "z": 0, "r": 128, "g": 64, "b": 32 },
+    ...
+  ]
+}
+```
 
 ## Cave Generation Algorithm
 
@@ -236,9 +327,19 @@ Simply open any HTML file in a modern browser with WebGL2 support:
 ```bash
 # Using Python's built-in server
 python -m http.server 8000
-# Then open http://localhost:8000/sea-caves.html
+# Then open http://localhost:8000/
 ```
+
+### Adding New Voxel Models
+1. Export your 3D model as OBJ format with MTL materials
+2. Convert to voxels using the voxelizer:
+   ```bash
+   python utils/voxelize.py assets/model.obj -r 32 -o assets/model.json
+   ```
+3. Load in game.js using `loadVoxelModel()`:
+   ```javascript
+   await this.loadVoxelModel('assets/model.json', x, y, z);
+   ```
 
 ### Browser Requirements
 - WebGL2 support (Chrome, Firefox, Edge, Safari 15+)
-
