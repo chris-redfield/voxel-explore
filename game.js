@@ -1,0 +1,2050 @@
+// ============================================================
+// IndexedDB Cave Cache
+// ============================================================
+const CaveCache = {
+    DB_NAME: 'SeaCavesCache',
+    DB_VERSION: 1,
+    STORE_NAME: 'caveTemplates',
+    NUM_CAVES: 5,
+
+    async open() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(this.STORE_NAME)) {
+                    db.createObjectStore(this.STORE_NAME, { keyPath: 'id' });
+                }
+            };
+        });
+    },
+
+    async getCaveCount() {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.STORE_NAME, 'readonly');
+            const store = tx.objectStore(this.STORE_NAME);
+            const request = store.count();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    },
+
+    async saveCave(id, voxels) {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.STORE_NAME, 'readwrite');
+            const store = tx.objectStore(this.STORE_NAME);
+            const request = store.put({ id, voxels });
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    },
+
+    async getCave(id) {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.STORE_NAME, 'readonly');
+            const store = tx.objectStore(this.STORE_NAME);
+            const request = store.get(id);
+            request.onsuccess = () => resolve(request.result?.voxels || null);
+            request.onerror = () => reject(request.error);
+        });
+    },
+
+    async getRandomCave() {
+        const count = await this.getCaveCount();
+        if (count === 0) return null;
+        const id = Math.floor(Math.random() * count);
+        return this.getCave(id);
+    },
+
+    async clearAll() {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.STORE_NAME, 'readwrite');
+            const store = tx.objectStore(this.STORE_NAME);
+            const request = store.clear();
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+};
+
+// ============================================================
+// Constants
+// ============================================================
+const SEA_LEVEL = 300;  // Y coordinate of sea surface - HIGH to allow HUGE deep caves
+const MAX_DEPTH = 280;  // Maximum depth below sea level
+const ISLAND_RADIUS = 120;  // Radius of the island
+
+// Cave system configuration
+const CAVE_SIZE = 5;  // Number of connected cave spheres (1 = single cave, 2+ = worm structure)
+const CAVE_RADIUS = 180;  // Radius of each cave sphere
+const CAVE_OVERLAP = 0.25;  // How much caves overlap (0 = just touching, 0.25 = nice tunnel connection)
+
+// Player speed configuration (easy to tweak)
+const SWIM_SPEED = 20;       // Base swimming speed (was 4)
+const FAST_SWIM_SPEED = 28;  // Sprint swimming speed with Shift
+const WALK_SPEED = 5;        // Walking speed on land
+const SPRINT_SPEED = 8;      // Sprinting speed on land
+
+// Water voxel color (used to identify water for collision)
+const WATER_COLOR = { r: 30, g: 90, b: 170 };
+
+// ============================================================
+// Island Generator - Minecraft style terrain and trees
+// ============================================================
+class IslandGenerator {
+    constructor(seed = 12345) {
+        this.seed = seed;
+        this.baseHeight = SEA_LEVEL + 3;  // Base island height just above water
+        this.hillHeight = 8;  // Small hills variation
+        this.scale = 0.015;   // Terrain noise scale
+    }
+
+    noise2D(x, z, scale, seed) {
+        const nx = x * scale + seed;
+        const nz = z * scale + seed * 1.5;
+        return (Math.sin(nx) * Math.cos(nz) +
+                Math.sin(nx * 2.1 + 0.5) * Math.cos(nz * 1.9 + 0.3) * 0.5 +
+                Math.sin(nx * 4.3 + 1.2) * Math.cos(nz * 3.7 + 0.7) * 0.25) / 1.75;
+    }
+
+    pseudoRandom(seed) {
+        const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+        return x - Math.floor(x);
+    }
+
+    // Get distance from island center (0-1 normalized, >1 = ocean)
+    getIslandFactor(x, z) {
+        const dist = Math.sqrt(x * x + z * z);
+        return dist / ISLAND_RADIUS;
+    }
+
+    // Get terrain height - minecraft style with island falloff
+    getHeight(x, z) {
+        const islandFactor = this.getIslandFactor(x, z);
+
+        // Ocean floor
+        if (islandFactor > 1.3) {
+            const oceanNoise = this.noise2D(x, z, 0.01, this.seed + 3000) * 5;
+            return Math.floor(SEA_LEVEL - MAX_DEPTH + 10 + oceanNoise);
+        }
+
+        // Minecraft-style terrain noise
+        const n1 = this.noise2D(x, z, this.scale, this.seed);
+        const n2 = this.noise2D(x, z, this.scale * 2, this.seed + 1000) * 0.5;
+        const n3 = this.noise2D(x, z, this.scale * 4, this.seed + 2000) * 0.25;
+        const terrainNoise = (n1 + n2 + n3) / 1.75;
+
+        if (islandFactor < 0.7) {
+            // Main island - flat with small hills
+            const height = this.baseHeight + Math.floor((terrainNoise * 0.5 + 0.5) * this.hillHeight);
+            return height;
+        } else if (islandFactor < 1.0) {
+            // Beach/shore transition - slopes down to water
+            const t = (islandFactor - 0.7) / 0.3;
+            const falloff = Math.pow(1.0 - t, 2);
+            const height = this.baseHeight + Math.floor((terrainNoise * 0.5 + 0.5) * this.hillHeight * falloff);
+            // Ensure beach is at or slightly above sea level
+            return Math.max(SEA_LEVEL - 1, Math.floor(height - (1 - falloff) * 5));
+        } else {
+            // Underwater slope
+            const t = Math.min((islandFactor - 1.0) / 0.3, 1.0);
+            const shallowDepth = SEA_LEVEL - 5;
+            const deepDepth = SEA_LEVEL - MAX_DEPTH + 10;
+            const underwaterNoise = this.noise2D(x, z, 0.02, this.seed + 4000) * 4;
+            return Math.floor(shallowDepth - (shallowDepth - deepDepth) * t + underwaterNoise);
+        }
+    }
+
+    // Check if position is on beach
+    isBeach(x, z, height) {
+        const islandFactor = this.getIslandFactor(x, z);
+        return islandFactor > 0.65 && islandFactor < 1.05 && height <= SEA_LEVEL + 2;
+    }
+
+    generateWorld(world, worldOffset, progress) {
+        const worldSize = world.worldSize;
+        const chunkSize = 32;  // Match minecraft-game2.html chunk size
+        const numChunks = Math.ceil(worldSize / chunkSize);
+        let processed = 0;
+        const totalChunks = numChunks * numChunks;
+
+        for (let cx = 0; cx < numChunks; cx++) {
+            for (let cz = 0; cz < numChunks; cz++) {
+                this._generateChunk(world, cx, cz, chunkSize, worldOffset);
+
+                processed++;
+                if (progress && processed % 20 === 0) {
+                    progress(processed / totalChunks);
+                }
+            }
+        }
+    }
+
+    _generateChunk(world, chunkX, chunkZ, chunkSize, worldOffset) {
+        const startX = chunkX * chunkSize;
+        const startZ = chunkZ * chunkSize;
+
+        // Pre-calculate heights for this chunk
+        const heights = new Int32Array(chunkSize * chunkSize);
+        for (let lx = 0; lx < chunkSize; lx++) {
+            for (let lz = 0; lz < chunkSize; lz++) {
+                const noiseX = startX + lx - worldOffset;
+                const noiseZ = startZ + lz - worldOffset;
+                heights[lx + lz * chunkSize] = this.getHeight(noiseX, noiseZ);
+            }
+        }
+
+        // Generate terrain columns
+        for (let lx = 0; lx < chunkSize; lx++) {
+            for (let lz = 0; lz < chunkSize; lz++) {
+                const h = heights[lx + lz * chunkSize];
+                const wx = startX + lx;
+                const wz = startZ + lz;
+                const noiseX = startX + lx - worldOffset;
+                const noiseZ = startZ + lz - worldOffset;
+
+                // Calculate depth based on neighbors (minecraft style)
+                const getH = (dx, dz) => {
+                    const nx = lx + dx, nz = lz + dz;
+                    if (nx >= 0 && nx < chunkSize && nz >= 0 && nz < chunkSize)
+                        return heights[nx + nz * chunkSize];
+                    return this.getHeight(noiseX + dx, noiseZ + dz);
+                };
+
+                const neighborHeights = [
+                    getH(-1, 0), getH(1, 0), getH(0, -1), getH(0, 1),
+                    getH(-1, -1), getH(-1, 1), getH(1, -1), getH(1, 1)
+                ];
+                const minH = Math.min(...neighborHeights);
+                const heightDiff = h - minH;
+                const extraDepth = Math.max(3, heightDiff + 2);
+                const startY = Math.max(0, h - extraDepth);
+
+                const isOnBeach = this.isBeach(noiseX, noiseZ, h);
+                const isUnderwater = h < SEA_LEVEL;
+
+                // Generate terrain column
+                for (let y = startY; y < h; y++) {
+                    let r, g, b;
+
+                    if (isUnderwater) {
+                        // Underwater terrain
+                        if (y === h - 1) {
+                            // Seafloor - sandy
+                            const v = this.pseudoRandom(noiseX * 1000 + noiseZ + y);
+                            r = 140 + (v * 30) | 0;
+                            g = 130 + (v * 25) | 0;
+                            b = 95 + (v * 25) | 0;
+                        } else {
+                            // Underwater rock
+                            const v = this.pseudoRandom(noiseX * 1000 + noiseZ + y);
+                            r = 70 + (v * 20) | 0;
+                            g = 75 + (v * 20) | 0;
+                            b = 65 + (v * 15) | 0;
+                        }
+                    } else if (isOnBeach) {
+                        // Beach sand
+                        const v = this.pseudoRandom(noiseX * 1000 + noiseZ + y);
+                        r = 220 + (v * 25) | 0;
+                        g = 200 + (v * 20) | 0;
+                        b = 150 + (v * 25) | 0;
+                    } else if (y === h - 1) {
+                        // Grass top (minecraft style colors)
+                        r = 74 + (this.pseudoRandom(noiseX * 1000 + noiseZ + y) * 20) | 0;
+                        g = 124 + (this.pseudoRandom(noiseX * 1000 + noiseZ + y + 1) * 20) | 0;
+                        b = 69 + (this.pseudoRandom(noiseX * 1000 + noiseZ + y + 2) * 20) | 0;
+                    } else if (y > h - 4) {
+                        // Dirt layer (minecraft style)
+                        r = 139 + (this.pseudoRandom(noiseX * 1000 + noiseZ + y) * 15) | 0;
+                        g = 90 + (this.pseudoRandom(noiseX * 1000 + noiseZ + y + 1) * 15) | 0;
+                        b = 60 + (this.pseudoRandom(noiseX * 1000 + noiseZ + y + 2) * 10) | 0;
+                    } else {
+                        // Stone (minecraft style)
+                        const shade = (this.pseudoRandom(noiseX * 1000 + noiseZ + y) * 20) | 0;
+                        r = 100 + shade;
+                        g = 100 + shade;
+                        b = 105 + shade;
+                    }
+
+                    world.setVoxel(wx, y, wz, r, g, b);
+                }
+
+                // Add water surface voxel if underwater
+                if (isUnderwater) {
+                    world.setVoxel(wx, SEA_LEVEL - 1, wz,
+                        WATER_COLOR.r, WATER_COLOR.g, WATER_COLOR.b);
+                }
+            }
+        }
+
+        // Generate trees (minecraft style) - only on main island
+        const treeSeed = this.seed + chunkX * 1000 + chunkZ;
+        const numTrees = 2 + Math.floor(this.pseudoRandom(treeSeed) * 3);
+
+        for (let i = 0; i < numTrees; i++) {
+            const lx = Math.floor(this.pseudoRandom(treeSeed + i * 100) * (chunkSize - 8)) + 4;
+            const lz = Math.floor(this.pseudoRandom(treeSeed + i * 100 + 50) * (chunkSize - 8)) + 4;
+            const groundY = heights[lx + lz * chunkSize];
+
+            const noiseX = startX + lx - worldOffset;
+            const noiseZ = startZ + lz - worldOffset;
+            const islandFactor = this.getIslandFactor(noiseX, noiseZ);
+
+            // Only place trees on main island (not beach, not water)
+            if (groundY < SEA_LEVEL + 2 || groundY > SEA_LEVEL + 15) continue;
+            if (islandFactor > 0.6) continue;  // Not on beach area
+
+            const wx = startX + lx;
+            const wz = startZ + lz;
+            const treeH = 5 + Math.floor(this.pseudoRandom(treeSeed + i * 200) * 4);
+
+            // Trunk (minecraft style brown)
+            for (let y = groundY; y < groundY + treeH; y++) {
+                world.setVoxel(wx, y, wz,
+                    93 + (this.pseudoRandom(i + y) * 10) | 0,
+                    64 + (this.pseudoRandom(i + y + 1) * 10) | 0,
+                    45 + (this.pseudoRandom(i + y + 2) * 10) | 0);
+            }
+
+            // Leaves (minecraft style)
+            const leafY = groundY + treeH - 2;
+            for (let dy = 0; dy <= 3; dy++) {
+                const r = dy < 2 ? 2 : 1;
+                for (let dx = -r; dx <= r; dx++) {
+                    for (let dz = -r; dz <= r; dz++) {
+                        // Skip corners on lower layers
+                        if (Math.abs(dx) === r && Math.abs(dz) === r && dy < 2) continue;
+                        // Skip trunk position on lower layers
+                        if (dx === 0 && dz === 0 && dy < 2) continue;
+
+                        world.setVoxel(wx + dx, leafY + dy, wz + dz,
+                            36 + (this.pseudoRandom(i + dx + dz + dy) * 20) | 0,
+                            115 + (this.pseudoRandom(i + dx + dz + dy + 1) * 30) | 0,
+                            40 + (this.pseudoRandom(i + dx + dz + dy + 2) * 20) | 0);
+                    }
+                }
+            }
+        }
+
+        // Flowers (minecraft style)
+        const flowerSeed = treeSeed + 5000;
+        const flowers = [[255, 50, 50], [255, 255, 50], [255, 150, 200], [150, 150, 255], [255, 165, 0]];
+        const numFlowers = 4 + Math.floor(this.pseudoRandom(flowerSeed) * 8);
+
+        for (let i = 0; i < numFlowers; i++) {
+            const lx = Math.floor(this.pseudoRandom(flowerSeed + i * 100) * chunkSize);
+            const lz = Math.floor(this.pseudoRandom(flowerSeed + i * 100 + 50) * chunkSize);
+            const h = heights[lx + lz * chunkSize];
+
+            const noiseX = startX + lx - worldOffset;
+            const noiseZ = startZ + lz - worldOffset;
+            const islandFactor = this.getIslandFactor(noiseX, noiseZ);
+
+            // Only on grass, not beach/water
+            if (h < SEA_LEVEL + 2 || islandFactor > 0.65) continue;
+
+            const c = flowers[Math.floor(this.pseudoRandom(flowerSeed + i) * flowers.length)];
+            world.setVoxel(startX + lx, h, startZ + lz, c[0], c[1], c[2]);
+        }
+
+        // Underwater decorations (coral, seaweed)
+        const coralSeed = treeSeed + 8000;
+        for (let i = 0; i < 5; i++) {
+            const lx = Math.floor(this.pseudoRandom(coralSeed + i * 100) * chunkSize);
+            const lz = Math.floor(this.pseudoRandom(coralSeed + i * 100 + 50) * chunkSize);
+            const h = heights[lx + lz * chunkSize];
+
+            // Only underwater, not too deep
+            if (h >= SEA_LEVEL || h < SEA_LEVEL - 20) continue;
+
+            // Skip beach transition zone
+            const coralNoiseX = startX + lx - worldOffset;
+            const coralNoiseZ = startZ + lz - worldOffset;
+            const coralIslandFactor = this.getIslandFactor(coralNoiseX, coralNoiseZ);
+            if (coralIslandFactor > 0.5 && coralIslandFactor < 1.5) continue;
+
+            const wx = startX + lx;
+            const wz = startZ + lz;
+            const coralChance = this.pseudoRandom(coralSeed + i);
+
+            if (coralChance > 0.5) {
+                // Coral
+                const coralHeight = 1 + Math.floor(this.pseudoRandom(coralSeed + i + 1) * 2);
+                const coralType = Math.floor(this.pseudoRandom(coralSeed + i + 2) * 4);
+                for (let dy = 1; dy <= coralHeight; dy++) {
+                    let cr, cg, cb;
+                    switch (coralType) {
+                        case 0: cr = 255; cg = 100; cb = 120; break;
+                        case 1: cr = 255; cg = 180; cb = 50; break;
+                        case 2: cr = 150; cg = 100; cb = 200; break;
+                        default: cr = 100; cg = 200; cb = 150; break;
+                    }
+                    world.setVoxel(wx, h + dy, wz, cr, cg, cb);
+                }
+            } else {
+                // Seaweed
+                const seaweedHeight = 2 + Math.floor(this.pseudoRandom(coralSeed + i + 3) * 3);
+                for (let dy = 1; dy <= seaweedHeight; dy++) {
+                    const v = this.pseudoRandom(coralSeed + i + dy);
+                    world.setVoxel(wx, h + dy, wz,
+                        30 + (v * 20) | 0,
+                        100 + (v * 50) | 0,
+                        40 + (v * 20) | 0);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// Cave Generator - EXACT from cave-level.html
+// ============================================================
+class CaveGenerator {
+    constructor(seed = 12345) {
+        this.seed = seed;
+        this.lightOrbCount = 0;
+    }
+
+    // Simple pseudo-random number generator
+    pseudoRandom(seed) {
+        const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+        return x - Math.floor(x);
+    }
+
+    // Check if a voxel is a water voxel (used to avoid placing formations on water)
+    _isWaterVoxel(v) {
+        if (!v || v.a === 0) return false;
+        // Water voxels have specific color: r=30, g=90, b=170
+        return v.r >= 25 && v.r <= 40 &&
+               v.g >= 80 && v.g <= 100 &&
+               v.b >= 160 && v.b <= 180;
+    }
+
+    // 2D noise for terrain variation
+    noise2D(x, z, scale, seed) {
+        const nx = x * scale + seed;
+        const nz = z * scale + seed * 1.5;
+        return (Math.sin(nx) * Math.cos(nz) +
+                Math.sin(nx * 2.1 + 0.5) * Math.cos(nz * 1.9 + 0.3) * 0.5 +
+                Math.sin(nx * 4.3 + 1.2) * Math.cos(nz * 3.7 + 0.7) * 0.25) / 1.75;
+    }
+
+    // 3D noise for cave carving
+    noise3D(x, y, z, scale, seed) {
+        const nx = x * scale + seed;
+        const ny = y * scale + seed * 1.3;
+        const nz = z * scale + seed * 1.7;
+        return (
+            Math.sin(nx) * Math.cos(ny) * Math.sin(nz) +
+            Math.sin(nx * 2.1) * Math.cos(ny * 1.9) * Math.sin(nz * 2.3) * 0.5 +
+            Math.sin(nx * 4.2) * Math.cos(ny * 3.8) * Math.sin(nz * 4.1) * 0.25
+        ) / 1.75;
+    }
+
+    _placeRockVoxel(world, x, y, z, isFloor) {
+        const variation = this.pseudoRandom(x * 1000 + y * 100 + z);
+        let r, g, b;
+
+        if (isFloor) {
+            // Floor rocks - darker, brownish gray
+            if (variation > 0.95) {
+                // Occasional mineral sparkle
+                r = 180 + (variation * 50) | 0;
+                g = 170 + (variation * 40) | 0;
+                b = 140 + (variation * 30) | 0;
+            } else if (variation > 0.8) {
+                // Darker patches
+                r = 45 + (variation * 15) | 0;
+                g = 40 + (variation * 15) | 0;
+                b = 35 + (variation * 10) | 0;
+            } else {
+                // Standard floor rock
+                r = 70 + (variation * 25) | 0;
+                g = 65 + (variation * 20) | 0;
+                b = 55 + (variation * 20) | 0;
+            }
+        } else {
+            // Walls and ceiling - gray with hints of color
+            if (variation > 0.97) {
+                // Crystal/mineral deposits
+                const mineralType = (variation * 3) | 0;
+                if (mineralType === 0) {
+                    r = 100; g = 150; b = 200; // Blue crystal
+                } else if (mineralType === 1) {
+                    r = 200; g = 150; b = 100; // Amber
+                } else {
+                    r = 150; g = 200; b = 150; // Green mineral
+                }
+            } else if (variation > 0.85) {
+                // Wet/mossy patches
+                r = 50 + (variation * 20) | 0;
+                g = 70 + (variation * 25) | 0;
+                b = 50 + (variation * 15) | 0;
+            } else {
+                // Standard rock
+                const base = 80 + (variation * 30) | 0;
+                r = base;
+                g = base - 5;
+                b = base - 10;
+            }
+        }
+
+        world.setVoxel(x, y, z, r, g, b);
+    }
+
+    _generateFormations(world, centerX, centerY, centerZ, radius) {
+        // Generate stalagmites (from floor) - scan DOWN from center to find floor
+        const numStalagmites = 80 + Math.floor(this.pseudoRandom(this.seed + 3000) * 120);
+
+        for (let i = 0; i < numStalagmites; i++) {
+            const angle = this.pseudoRandom(this.seed + i * 50) * Math.PI * 2;
+            const dist = this.pseudoRandom(this.seed + i * 50 + 25) * radius * 0.75;
+
+            const baseX = Math.floor(centerX + Math.cos(angle) * dist);
+            const baseZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+            // Scan DOWN from center to find the floor surface
+            let foundFloor = false;
+            let floorY = centerY;
+
+            for (let y = centerY; y > centerY - radius - 20; y--) {
+                const v = world.getVoxel(baseX, y, baseZ);
+                if (v && v.a > 0) {
+                    // Found solid rock - the floor surface is at y+1
+                    floorY = y + 1;
+                    foundFloor = true;
+                    break;
+                }
+            }
+
+            // Only create stalagmite if we found actual floor
+            if (foundFloor) {
+                const height = 5 + Math.floor(this.pseudoRandom(this.seed + i * 100) * 20);
+                const baseRadius = 2 + Math.floor(this.pseudoRandom(this.seed + i * 100 + 10) * 3);
+                this._createStalagmite(world, baseX, floorY, baseZ, height, baseRadius);
+            }
+        }
+
+        // Generate stalactites (from ceiling) - scan UP from center to find ceiling
+        const numStalactites = 100 + Math.floor(this.pseudoRandom(this.seed + 4000) * 150);
+
+        for (let i = 0; i < numStalactites; i++) {
+            const angle = this.pseudoRandom(this.seed + i * 70 + 1000) * Math.PI * 2;
+            const dist = this.pseudoRandom(this.seed + i * 70 + 1025) * radius * 0.75;
+
+            const baseX = Math.floor(centerX + Math.cos(angle) * dist);
+            const baseZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+            // Scan UP from center to find the ceiling surface
+            let foundCeiling = false;
+            let ceilingY = centerY;
+
+            for (let y = centerY; y < centerY + radius + 20; y++) {
+                const v = world.getVoxel(baseX, y, baseZ);
+                // Skip water voxels - they are not valid ceiling surfaces
+                if (v && v.a > 0 && !this._isWaterVoxel(v)) {
+                    // Found solid rock - the ceiling surface is at y-1
+                    ceilingY = y - 1;
+                    foundCeiling = true;
+                    break;
+                }
+            }
+
+            // Only create stalactite if we found actual ceiling (not an opening or water)
+            if (foundCeiling) {
+                // Double-check there's solid rock directly above where we'll attach (not water)
+                const attachCheck = world.getVoxel(baseX, ceilingY + 1, baseZ);
+                if (attachCheck && attachCheck.a > 0 && !this._isWaterVoxel(attachCheck)) {
+                    const length = 4 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1000) * 18);
+                    const baseRadius = 1 + Math.floor(this.pseudoRandom(this.seed + i * 120 + 1010) * 2);
+                    this._createStalactite(world, baseX, ceilingY, baseZ, length, baseRadius);
+                }
+            }
+        }
+    }
+
+    _createStalagmite(world, baseX, baseY, baseZ, height, baseRadius) {
+        for (let y = 0; y < height; y++) {
+            // Taper toward top
+            const progress = y / height;
+            const currentRadius = baseRadius * (1 - progress * 0.9);
+
+            for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+                for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+                    const d = Math.sqrt(dx * dx + dz * dz);
+                    if (d <= currentRadius) {
+                        const wx = baseX + dx;
+                        const wy = baseY + y;
+                        const wz = baseZ + dz;
+
+                        // Color variation
+                        const v = this.pseudoRandom(wx + wy * 100 + wz);
+                        const brightness = 60 + (v * 40) | 0;
+                        const r = brightness + 10;
+                        const g = brightness + 5;
+                        const b = brightness - 5;
+
+                        world.setVoxel(wx, wy, wz, r, g, b);
+                    }
+                }
+            }
+        }
+    }
+
+    _createStalactite(world, baseX, baseY, baseZ, length, baseRadius) {
+        for (let y = 0; y < length; y++) {
+            // Taper toward bottom
+            const progress = y / length;
+            const currentRadius = baseRadius * (1 - progress * 0.95);
+
+            for (let dx = -baseRadius; dx <= baseRadius; dx++) {
+                for (let dz = -baseRadius; dz <= baseRadius; dz++) {
+                    const d = Math.sqrt(dx * dx + dz * dz);
+                    if (d <= currentRadius) {
+                        const wx = baseX + dx;
+                        const wy = baseY - y;
+                        const wz = baseZ + dz;
+
+                        // Slightly different coloring - more gray
+                        const v = this.pseudoRandom(wx + wy * 100 + wz);
+                        const brightness = 70 + (v * 35) | 0;
+                        const r = brightness;
+                        const g = brightness;
+                        const b = brightness + 5;
+
+                        world.setVoxel(wx, wy, wz, r, g, b);
+                    }
+                }
+            }
+        }
+
+        // Add drip at bottom (optional wet look)
+        if (this.pseudoRandom(baseX + baseZ) > 0.7) {
+            world.setVoxel(baseX, baseY - length, baseZ, 100, 120, 140);
+        }
+    }
+
+    _addGroundDetails(world, centerX, centerY, centerZ, radius) {
+        // Add scattered rocks and crystals on the floor
+        const floorY = centerY - radius * 0.4;
+        const numDetails = 150 + Math.floor(this.pseudoRandom(this.seed + 7000) * 100);
+
+        for (let i = 0; i < numDetails; i++) {
+            const angle = this.pseudoRandom(this.seed + i * 60 + 7000) * Math.PI * 2;
+            const dist = this.pseudoRandom(this.seed + i * 60 + 7025) * radius * 0.8;
+
+            const detailX = Math.floor(centerX + Math.cos(angle) * dist);
+            const detailZ = Math.floor(centerZ + Math.sin(angle) * dist);
+
+            // Find floor - scan down using same range as stalagmites
+            let actualFloorY = floorY;
+            for (let y = centerY; y > centerY - radius - 20; y--) {
+                const v = world.getVoxel(detailX, y, detailZ);
+                if (v && v.a > 0) {
+                    actualFloorY = y + 1;
+                    break;
+                }
+            }
+
+            const detailType = this.pseudoRandom(this.seed + i * 70 + 7050);
+
+            if (detailType > 0.8) {
+                // Small crystal cluster
+                const crystalColor = detailType > 0.9
+                    ? [150, 200, 255] // Blue crystal
+                    : [200, 150, 255]; // Purple crystal
+
+                for (let dy = 0; dy < 3; dy++) {
+                    world.setVoxel(detailX, actualFloorY + dy, detailZ,
+                        crystalColor[0], crystalColor[1], crystalColor[2]);
+                }
+            } else if (detailType > 0.5) {
+                // Small rock
+                const v = this.pseudoRandom(detailX + detailZ);
+                const gray = 50 + (v * 30) | 0;
+                world.setVoxel(detailX, actualFloorY, detailZ, gray, gray - 5, gray - 10);
+            }
+            // else nothing (keep some areas clear)
+        }
+    }
+}
+
+
+// ============================================================
+// Player (Diver)
+// ============================================================
+class Diver {
+    constructor() {
+        this.x = 0; this.y = 50; this.z = 0;
+        this.vx = 0; this.vy = 0; this.vz = 0;
+        this.yaw = 0; this.pitch = 0;
+        this.width = 0.6; this.height = 1.8; this.eyeHeight = 1.6;
+        this.onGround = false;
+
+        // Surface movement
+        this.walkSpeed = WALK_SPEED;
+        this.sprintSpeed = SPRINT_SPEED;
+        this.jumpForce = 7;
+        this.gravity = 20;
+
+        // Underwater movement (swim mode)
+        this.swimSpeed = SWIM_SPEED;
+        this.fastSwimSpeed = FAST_SWIM_SPEED;
+        this.surfaceBoost = 12;  // Strong upward boost to breach surface
+
+        this.isUnderwater = false;
+        this.wasUnderwater = false;  // For hysteresis
+        this.depth = 0;  // Depth below sea level
+    }
+
+    setSpawn(x, y, z) { this.spawnX = x; this.spawnY = y; this.spawnZ = z; }
+    respawn() {
+        this.x = this.spawnX;
+        this.y = this.spawnY;
+        this.z = this.spawnZ;
+        this.vx = this.vy = this.vz = 0;
+    }
+
+    getEyePos() { return [this.x, this.y + this.eyeHeight, this.z]; }
+    getForward() { return [Math.sin(this.yaw), Math.cos(this.yaw)]; }
+    getRight() { return [Math.cos(this.yaw), -Math.sin(this.yaw)]; }
+
+    // 3D forward vector (includes pitch)
+    getForward3D() {
+        const cp = Math.cos(this.pitch);
+        return [
+            Math.sin(this.yaw) * cp,
+            Math.sin(this.pitch),  // Positive pitch = looking up = move up when pressing W
+            Math.cos(this.yaw) * cp
+        ];
+    }
+
+    rotate(dy, dp) {
+        this.yaw += dy;
+        this.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, this.pitch - dp));
+    }
+
+    updateEnvironment() {
+        const eyeY = this.y + this.eyeHeight;
+
+        // Hysteresis to prevent flickering at water surface
+        // Need to cross threshold by 0.5 blocks to change state
+        const HYSTERESIS = 0.5;
+
+        if (this.wasUnderwater) {
+            // Currently underwater - need to go clearly ABOVE surface to exit
+            this.isUnderwater = eyeY < (SEA_LEVEL + HYSTERESIS);
+        } else {
+            // Currently on surface - need to go clearly BELOW surface to enter water
+            this.isUnderwater = eyeY < (SEA_LEVEL - HYSTERESIS);
+        }
+
+        this.wasUnderwater = this.isUnderwater;
+        this.depth = this.isUnderwater ? Math.max(0, SEA_LEVEL - eyeY) : 0;
+    }
+
+    // Check if near water surface (for breach boost)
+    isNearSurface() {
+        const eyeY = this.y + this.eyeHeight;
+        return eyeY > SEA_LEVEL - 3 && eyeY < SEA_LEVEL + 1;
+    }
+}
+
+// ============================================================
+// Main Game
+// ============================================================
+class SeaCaveGame {
+    constructor(canvasId) {
+        this.canvas = document.getElementById(canvasId);
+        this.engine = new VoxelEngine(this.canvas);
+        this.player = new Diver();
+        this.terrain = new IslandGenerator(Math.floor(Math.random() * 100000));
+        this.caveGen = new CaveGenerator(Math.floor(Math.random() * 100000));
+
+        this.worldOffset = 0;
+        this.loadTime = 0;
+        this.maxDepthReached = 0;
+
+        this.keys = {};
+        this.isLocked = false;
+        this.mouseDelta = { x: 0, y: 0 };
+        this.fps = 0;
+        this.frameCount = 0;
+        this.lastFpsTime = performance.now();
+
+        this._setupInput();
+    }
+
+    _setupInput() {
+        window.addEventListener('keydown', e => {
+            if (this.keys[e.code]) return;
+            this.keys[e.code] = true;
+            if (e.code === 'Space') {
+                e.preventDefault();
+                if (!this.player.isUnderwater && this.player.onGround) {
+                    this.player.vy = this.player.jumpForce;
+                    this.player.onGround = false;
+                }
+            }
+            if (e.code === 'KeyL') {
+                this._toggleFlashlight();
+            }
+            if (e.code === 'Escape' && this.isLocked) document.exitPointerLock();
+        });
+        window.addEventListener('keyup', e => this.keys[e.code] = false);
+        this.canvas.addEventListener('click', () => {
+            if (!this.isLocked) this.canvas.requestPointerLock();
+        });
+        document.addEventListener('pointerlockchange', () => {
+            this.isLocked = document.pointerLockElement === this.canvas;
+            document.getElementById('overlay').classList.toggle('hidden', this.isLocked);
+            document.querySelector('.crosshair').classList.toggle('visible', this.isLocked);
+            this.canvas.parentElement.classList.toggle('locked', this.isLocked);
+            if (!this.isLocked) this.keys = {};
+        });
+        window.addEventListener('blur', () => this.keys = {});
+        document.addEventListener('mousemove', e => {
+            if (this.isLocked) {
+                this.mouseDelta.x += e.movementX;
+                this.mouseDelta.y += e.movementY;
+            }
+        });
+        window.addEventListener('resize', () => this._resize());
+
+        // Flashlight toggle
+        document.getElementById('flashlight-toggle').addEventListener('change', (e) => {
+            this.engine.settings.lanternEnabled = e.target.checked;
+            this._updateFlashlightIcon(e.target.checked);
+        });
+    }
+
+    _toggleFlashlight() {
+        const toggle = document.getElementById('flashlight-toggle');
+        toggle.checked = !toggle.checked;
+        this.engine.settings.lanternEnabled = toggle.checked;
+        this._updateFlashlightIcon(toggle.checked);
+    }
+
+    _updateFlashlightIcon(enabled) {
+        const icon = document.getElementById('flashlight-icon');
+        icon.style.textShadow = enabled ? '0 0 10px #ffdd44' : 'none';
+    }
+
+    async init() {
+        const loadingBar = document.getElementById('loading-bar');
+        const loadingText = document.getElementById('loading-text');
+        const loadingStats = document.getElementById('loading-stats');
+
+        const startTime = performance.now();
+
+        const progress = (p, text, stats = '') => {
+            loadingBar.style.width = (p * 100) + '%';
+            loadingText.textContent = text;
+            loadingStats.textContent = stats;
+        };
+
+        // Check if we need to generate cave templates (first-time setup)
+        const cachedCount = await CaveCache.getCaveCount();
+        if (cachedCount < CaveCache.NUM_CAVES) {
+            await this._firstTimeSetup(progress, cachedCount);
+        }
+
+        progress(0, 'Creating ocean world...', '');
+        await this._delay(50);
+
+        // Create world: 64 coarse = 512³ voxels
+        this.engine.createWorld(128, 8);  // 128*8 = 1024³ world to fit large cave
+        this.worldOffset = Math.floor(this.engine.world.worldSize / 2);
+
+        document.getElementById('world-size').textContent =
+            this.engine.world.worldSize + '³';
+        document.getElementById('sea-level').textContent = SEA_LEVEL;
+        document.getElementById('max-depth').textContent = MAX_DEPTH + 'm';
+
+        progress(0.05, 'Generating island and seafloor...', '');
+        await this._delay(50);
+
+        // Generate terrain with progress callback
+        console.time('TERRAIN');
+        let lastUpdate = performance.now();
+        this.terrain.generateWorld(this.engine.world, this.worldOffset, (p) => {
+            const now = performance.now();
+            if (now - lastUpdate > 100) {
+                progress(0.05 + p * 0.40,
+                    `Generating terrain: ${Math.floor(p * 100)}%`,
+                    '');
+                lastUpdate = now;
+            }
+        });
+        console.timeEnd('TERRAIN');
+
+        // Load cave from cache and apply to world
+        progress(0.48, 'Loading cave from cache...', '');
+        await this._delay(50);
+
+        // Calculate cave centers for worm structure
+        const caveCenters = this._calculateCaveCenters();
+        this.caveCenters = caveCenters;
+
+        // Load random cave template from cache
+        console.time('CAVES_FROM_CACHE');
+        const caveTemplate = await CaveCache.getRandomCave();
+
+        if (caveTemplate) {
+            progress(0.55, 'Applying cave template...', `${caveTemplate.length.toLocaleString()} voxels`);
+            await this._delay(10);
+
+            // Apply the same template to each cave position
+            for (let i = 0; i < caveCenters.length; i++) {
+                const cave = caveCenters[i];
+                console.time(`APPLY_CAVE_${i + 1}`);
+                this._applyCaveTemplate(caveTemplate, cave.x, cave.y, cave.z);
+                console.timeEnd(`APPLY_CAVE_${i + 1}`);
+                console.log(`Cave ${i + 1} applied at (${cave.x}, ${cave.y}, ${cave.z})`);
+            }
+        } else {
+            console.warn('No cached caves found!');
+        }
+        console.timeEnd('CAVES_FROM_CACHE');
+
+        // Carve connecting tunnels between adjacent caves
+        if (caveCenters.length > 1) {
+            progress(0.81, 'Carving connecting tunnels...', '');
+            await this._delay(10);
+            console.time('TUNNELS');
+            this._carveConnectingTunnels(caveCenters);
+            console.timeEnd('TUNNELS');
+        }
+
+        // Generate formations for all caves
+        progress(0.82, 'Growing stalagmites and stalactites...', '');
+        await this._delay(10);
+        console.time('FORMATIONS');
+        for (const cave of caveCenters) {
+            this.caveGen._generateFormations(this.engine.world, cave.x, cave.y, cave.z, CAVE_RADIUS);
+        }
+        console.timeEnd('FORMATIONS');
+
+        // Add ground details for all caves
+        progress(0.86, 'Adding cave details...', '');
+        await this._delay(10);
+        console.time('DETAILS');
+        for (const cave of caveCenters) {
+            this.caveGen._addGroundDetails(this.engine.world, cave.x, cave.y, cave.z, CAVE_RADIUS);
+        }
+        console.timeEnd('DETAILS');
+
+        console.log(`Cave system generated: ${caveCenters.length} connected caves`);
+
+        // Load and place the pirate ship near the island
+        progress(0.87, 'Loading pirate ship...', '');
+        await this._delay(10);
+
+        // Place ship on the ACTUAL seafloor, north of island (away from caves)
+        const shipX = this.worldOffset + 180;  // East of island
+        const shipZ = this.worldOffset - 280;  // Far north (away from caves)
+
+        // Get the actual terrain height at this position so ship sits ON the bottom
+        const shipNoiseX = shipX - this.worldOffset;
+        const shipNoiseZ = shipZ - this.worldOffset;
+        const seafloorHeight = this.terrain.getHeight(shipNoiseX, shipNoiseZ);
+        // Ship model is centered, so add half its height (83/2 ≈ 42) to lift it up
+        // so the hull bottom rests on the ground, not buried
+        const shipY = seafloorHeight + 42;    // Lift so bottom touches ground
+        const shipTilt = 0;                    // No tilt for now
+
+        console.log(`Placing ship at seafloor height: ${seafloorHeight}`);
+        await this.loadVoxelModel('assets/ship.json', shipX, shipY, shipZ, 1, shipTilt);
+
+        // Place ancient stonegate ruins near the ship
+        const ruinsX = shipX - 120;  // Further west of ship
+        const ruinsZ = shipZ + 100;  // Further south of ship
+        const ruinsNoiseX = ruinsX - this.worldOffset;
+        const ruinsNoiseZ = ruinsZ - this.worldOffset;
+        const ruinsFloorHeight = this.terrain.getHeight(ruinsNoiseX, ruinsNoiseZ);
+        // Stonegate is 40x39x16, sink 5 voxels into ground (20 - 5 = 15) for ancient look
+        const ruinsY = ruinsFloorHeight + 15;
+        console.log(`Placing ruins at seafloor height: ${ruinsFloorHeight}`);
+        await this.loadVoxelModel('assets/stonegate.json', ruinsX, ruinsY, ruinsZ, 1, 0, 45);
+
+        // Place roman poles - far from both ship and portal, in open seafloor
+        // Position them west of ruins, far from ship (which is east/north)
+        // Pole 1: Standing upright
+        const pole1X = ruinsX - 100;  // Far west of ruins
+        const pole1Z = ruinsZ - 60;   // Slightly north
+        const pole1FloorHeight = this.terrain.getHeight(pole1X - this.worldOffset, pole1Z - this.worldOffset);
+        // Single column is smaller now, height ~28, so half is 14
+        await this.loadVoxelModel('assets/roman-pole.json', pole1X, pole1FloorHeight + 14, pole1Z);
+
+        // Pole 2: Fallen over (90 degree tilt - lying on seafloor)
+        const pole2X = pole1X - 50;   // Further west
+        const pole2Z = pole1Z + 40;   // Slightly south
+        const pole2FloorHeight = this.terrain.getHeight(pole2X - this.worldOffset, pole2Z - this.worldOffset);
+        await this.loadVoxelModel('assets/roman-pole.json', pole2X, pole2FloorHeight + 4, pole2Z, 1, 90);
+
+        // Place lighthouse on the island, near the edge but before the beach
+        const lighthouseX = this.worldOffset + 70;   // East side of island
+        const lighthouseZ = this.worldOffset + 20;   // Slightly south
+        const lighthouseNoiseX = lighthouseX - this.worldOffset;
+        const lighthouseNoiseZ = lighthouseZ - this.worldOffset;
+        const lighthouseGroundHeight = this.terrain.getHeight(lighthouseNoiseX, lighthouseNoiseZ);
+        // Lighthouse model height is 48, add half (24) to place bottom on ground
+        const lighthouseY = lighthouseGroundHeight + 24;
+
+        console.log(`Placing lighthouse at ground height: ${lighthouseGroundHeight}`);
+        await this.loadVoxelModel('assets/lighthouse.json', lighthouseX, lighthouseY, lighthouseZ);
+
+        // Add spiral stairs around the lighthouse (same position, stairs wrap around it)
+        // Stairs grid is 11x48x11, centered at same position as lighthouse
+        await this.loadVoxelModel('assets/lighthouse_stairs.json', lighthouseX, lighthouseY, lighthouseZ);
+
+        const genTime = performance.now();
+        progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
+        await this._delay(50);
+
+        // Upload to GPU
+        console.time('GPU_UPLOAD');
+        this.engine.uploadWorld();
+        console.timeEnd('GPU_UPLOAD');
+
+        const uploadTime = performance.now();
+        progress(0.95, 'Setting spawn point...', `Upload: ${((uploadTime - genTime)/1000).toFixed(1)}s`);
+        await this._delay(50);
+
+        // Spawn player on the island - calculate actual terrain height
+        const spawnX = this.worldOffset;
+        const spawnZ = this.worldOffset;
+        // Get terrain height at center (noise coords 0,0)
+        const terrainHeight = this.terrain.getHeight(0, 0);
+        const spawnY = terrainHeight + 3;  // Spawn above the terrain
+
+        console.log(`Terrain height at spawn: ${terrainHeight}, spawning at Y=${spawnY}`);
+
+        this.player.x = spawnX;
+        this.player.y = spawnY;
+        this.player.z = spawnZ;
+        this.player.setSpawn(this.player.x, this.player.y, this.player.z);
+
+        this.loadTime = (performance.now() - startTime) / 1000;
+
+        progress(1, 'Ready!', `Total: ${this.loadTime.toFixed(1)}s`);
+        await this._delay(500);
+
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('overlay').classList.remove('hidden');
+
+        // Initial settings - bright day, above water
+        this.engine.settings.enableShadows = true;
+        this.engine.settings.fogDensity = 0.5;
+        this.engine.settings.skyColorTop = [0.4, 0.7, 1.0];
+        this.engine.settings.skyColorBottom = [0.7, 0.85, 1.0];
+        this.engine.settings.lanternEnabled = false;
+        this.engine.settings.lanternIntensity = 5.0;
+        this.engine.settings.lanternConeAngle = 0.5;
+        this.engine.camera.fov = 70;
+
+        // Water surface rendering - normalized color (0-1 range)
+        // This tells the engine which voxels are water, so only their top face renders
+        this.engine.settings.waterColor = [
+            WATER_COLOR.r / 255,
+            WATER_COLOR.g / 255,
+            WATER_COLOR.b / 255
+        ];
+
+        // Set up depth meter sea level line
+        const meterHeight = 200;
+        const seaLevelPercent = 0.5; // Middle of the meter
+        document.getElementById('sea-level-line').style.bottom =
+            (seaLevelPercent * meterHeight) + 'px';
+
+        this._resize();
+
+        console.log('=== SEA CAVES LOADED ===');
+        console.log(`World size: ${this.engine.world.worldSize}³`);
+        console.log(`Sea level: ${SEA_LEVEL}`);
+        console.log(`Voxels: ${this.engine.getVoxelCount().toLocaleString()}`);
+        console.log(`Memory: ${this.engine.getMemoryUsage().totalMB.toFixed(2)} MB`);
+        console.log(`Load time: ${this.loadTime.toFixed(1)}s`);
+    }
+
+    _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    // Load a voxel model from JSON and place it in the world
+    // tiltAngle: rotation around Z axis (roll), yawAngle: around Y axis, pitchAngle: around X axis
+    async loadVoxelModel(jsonPath, offsetX, offsetY, offsetZ, scale = 1, tiltAngle = 0, yawAngle = 0, pitchAngle = 0) {
+        console.log(`Loading voxel model: ${jsonPath}`);
+
+        try {
+            const response = await fetch(jsonPath);
+            if (!response.ok) throw new Error(`Failed to load ${jsonPath}`);
+
+            const data = await response.json();
+            const voxels = data.voxels;
+            const world = this.engine.world;
+            const gridSize = data.gridSize;
+
+            // Calculate center of model for rotation
+            const centerX = gridSize.x / 2;
+            const centerY = gridSize.y / 2;
+            const centerZ = gridSize.z / 2;
+
+            // Convert angles to radians
+            const tiltRad = tiltAngle * Math.PI / 180;
+            const cosT = Math.cos(tiltRad);
+            const sinT = Math.sin(tiltRad);
+            const yawRad = yawAngle * Math.PI / 180;
+            const cosY = Math.cos(yawRad);
+            const sinY = Math.sin(yawRad);
+            const pitchRad = pitchAngle * Math.PI / 180;
+            const cosP = Math.cos(pitchRad);
+            const sinP = Math.sin(pitchRad);
+
+            console.log(`  Placing ${voxels.length} voxels at (${offsetX}, ${offsetY}, ${offsetZ}), tilt: ${tiltAngle}°, yaw: ${yawAngle}°, pitch: ${pitchAngle}°`);
+
+            let placed = 0;
+            for (const v of voxels) {
+                // Center the coordinates
+                let lx = v.x - centerX;
+                let ly = v.y - centerY;
+                let lz = v.z - centerZ;
+
+                // Apply tilt rotation around Z axis (roll)
+                if (tiltAngle !== 0) {
+                    const newLx = lx * cosT - ly * sinT;
+                    const newLy = lx * sinT + ly * cosT;
+                    lx = newLx;
+                    ly = newLy;
+                }
+
+                // Apply yaw rotation around Y axis
+                if (yawAngle !== 0) {
+                    const newLx = lx * cosY + lz * sinY;
+                    const newLz = -lx * sinY + lz * cosY;
+                    lx = newLx;
+                    lz = newLz;
+                }
+
+                // Apply pitch rotation around X axis
+                if (pitchAngle !== 0) {
+                    const newLy = ly * cosP - lz * sinP;
+                    const newLz = ly * sinP + lz * cosP;
+                    ly = newLy;
+                    lz = newLz;
+                }
+
+                // Apply scale and offset
+                const wx = Math.floor(offsetX + lx * scale);
+                const wy = Math.floor(offsetY + ly * scale);
+                const wz = Math.floor(offsetZ + lz * scale);
+
+                // Check bounds
+                if (wx >= 0 && wx < world.worldSize &&
+                    wy >= 0 && wy < world.worldSize &&
+                    wz >= 0 && wz < world.worldSize) {
+                    world.setVoxel(wx, wy, wz, v.r, v.g, v.b);
+                    placed++;
+                }
+            }
+
+            console.log(`  Placed ${placed} voxels`);
+            return { placed, gridSize: data.gridSize };
+        } catch (e) {
+            console.error(`Failed to load voxel model: ${e}`);
+            return null;
+        }
+    }
+
+    // Generate a cave template (voxels stored relative to center)
+    async _generateCaveTemplate(seed, radius, progress) {
+        const voxels = [];
+        const caveGen = new CaveGenerator(seed);
+
+        const maxNoise = 55;
+        const maxShellThickness = 18;
+        const outerBound = radius + maxNoise;
+        const innerBound = Math.max(0, radius - maxNoise - maxShellThickness);
+
+        // Bounds relative to center (0, 0, 0)
+        const minX = -Math.ceil(outerBound);
+        const maxX = Math.ceil(outerBound);
+
+        // Ceiling openings
+        const ceilingOpenings = [];
+        const numOpenings = 8 + Math.floor(caveGen.pseudoRandom(seed + 5000) * 10);
+        for (let i = 0; i < numOpenings; i++) {
+            const angle = caveGen.pseudoRandom(seed + i * 100) * Math.PI * 2;
+            const dist = caveGen.pseudoRandom(seed + i * 100 + 50) * radius * 0.6;
+            const openingRadius = 10 + caveGen.pseudoRandom(seed + i * 200) * 20;
+            ceilingOpenings.push({
+                x: Math.cos(angle) * dist,
+                z: Math.sin(angle) * dist,
+                radius: openingRadius
+            });
+        }
+
+        // Pre-compute sparse noise grid
+        const NOISE_STEP = 8;
+        const gridMin = Math.floor(-outerBound / NOISE_STEP) - 1;
+        const gridMax = Math.ceil(outerBound / NOISE_STEP) + 1;
+        const gridSize = gridMax - gridMin + 1;
+
+        const noiseGrid1 = new Float32Array(gridSize * gridSize * gridSize);
+        const noiseGrid2 = new Float32Array(gridSize * gridSize * gridSize);
+        const noiseGrid3 = new Float32Array(gridSize * gridSize * gridSize);
+
+        for (let gx = 0; gx < gridSize; gx++) {
+            for (let gy = 0; gy < gridSize; gy++) {
+                for (let gz = 0; gz < gridSize; gz++) {
+                    const wx = (gridMin + gx) * NOISE_STEP;
+                    const wy = (gridMin + gy) * NOISE_STEP;
+                    const wz = (gridMin + gz) * NOISE_STEP;
+                    const idx = gx + gy * gridSize + gz * gridSize * gridSize;
+                    noiseGrid1[idx] = caveGen.noise3D(wx, wy, wz, 0.025, seed) * 35;
+                    noiseGrid2[idx] = caveGen.noise3D(wx, wy, wz, 0.07, seed + 1000) * 18;
+                    noiseGrid3[idx] = caveGen.noise3D(wx, wy, wz, 0.04, seed + 2000) * 6;
+                }
+            }
+        }
+
+        const sampleNoise = (grid, x, y, z) => {
+            const fx = x / NOISE_STEP - gridMin;
+            const fy = y / NOISE_STEP - gridMin;
+            const fz = z / NOISE_STEP - gridMin;
+            const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+            const xd = fx - x0, yd = fy - y0, zd = fz - z0;
+            const cx0 = Math.max(0, Math.min(x0, gridSize - 1));
+            const cx1 = Math.max(0, Math.min(x0 + 1, gridSize - 1));
+            const cy0 = Math.max(0, Math.min(y0, gridSize - 1));
+            const cy1 = Math.max(0, Math.min(y0 + 1, gridSize - 1));
+            const cz0 = Math.max(0, Math.min(z0, gridSize - 1));
+            const cz1 = Math.max(0, Math.min(z0 + 1, gridSize - 1));
+            const c000 = grid[cx0 + cy0 * gridSize + cz0 * gridSize * gridSize];
+            const c100 = grid[cx1 + cy0 * gridSize + cz0 * gridSize * gridSize];
+            const c010 = grid[cx0 + cy1 * gridSize + cz0 * gridSize * gridSize];
+            const c110 = grid[cx1 + cy1 * gridSize + cz0 * gridSize * gridSize];
+            const c001 = grid[cx0 + cy0 * gridSize + cz1 * gridSize * gridSize];
+            const c101 = grid[cx1 + cy0 * gridSize + cz1 * gridSize * gridSize];
+            const c011 = grid[cx0 + cy1 * gridSize + cz1 * gridSize * gridSize];
+            const c111 = grid[cx1 + cy1 * gridSize + cz1 * gridSize * gridSize];
+            const c00 = c000 * (1 - xd) + c100 * xd;
+            const c01 = c001 * (1 - xd) + c101 * xd;
+            const c10 = c010 * (1 - xd) + c110 * xd;
+            const c11 = c011 * (1 - xd) + c111 * xd;
+            const c0 = c00 * (1 - yd) + c10 * yd;
+            const c1 = c01 * (1 - yd) + c11 * yd;
+            return c0 * (1 - zd) + c1 * zd;
+        };
+
+        const totalSlices = maxX - minX + 1;
+        let processed = 0;
+        let lastUpdate = performance.now();
+
+        // Generate shell voxels
+        for (let x = minX; x <= maxX; x++) {
+            const dx2 = x * x;
+            const maxZDist = Math.sqrt(Math.max(0, outerBound * outerBound - dx2));
+            const zStart = Math.floor(-maxZDist);
+            const zEnd = Math.ceil(maxZDist);
+
+            for (let z = zStart; z <= zEnd; z++) {
+                const distXZ2 = dx2 + z * z;
+                if (distXZ2 > outerBound * outerBound) continue;
+
+                const outerDY = Math.sqrt(Math.max(0, outerBound * outerBound - distXZ2)) / 1.3;
+                const innerDY = distXZ2 < innerBound * innerBound
+                    ? Math.sqrt(innerBound * innerBound - distXZ2) / 1.3 : 0;
+
+                const yRanges = innerDY > 0
+                    ? [[Math.floor(-outerDY), Math.ceil(-innerDY)], [Math.floor(innerDY), Math.ceil(outerDY)]]
+                    : [[Math.floor(-outerDY), Math.ceil(outerDY)]];
+
+                for (const [yStart, yEnd] of yRanges) {
+                    for (let y = yStart; y <= yEnd; y++) {
+                        const distY = Math.abs(y) * 1.3;
+                        const dist = Math.sqrt(distXZ2 + distY * distY);
+                        if (dist < innerBound || dist > outerBound) continue;
+
+                        const noise = sampleNoise(noiseGrid1, x, y, z);
+                        const wallNoise = sampleNoise(noiseGrid2, x, y, z);
+                        const effectiveRadius = radius + noise + wallNoise;
+                        if (dist >= effectiveRadius) continue;
+
+                        // Check ceiling openings
+                        let inOpening = false;
+                        if (y > radius * 0.3) {
+                            for (const opening of ceilingOpenings) {
+                                const openDist = Math.sqrt((x - opening.x) ** 2 + (z - opening.z) ** 2);
+                                if (openDist < opening.radius) {
+                                    const edgeFactor = openDist / opening.radius;
+                                    const heightFactor = (y - radius * 0.3) / (radius * 0.4);
+                                    if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
+                                        inOpening = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!inOpening) {
+                            const shellThickness = 10 + sampleNoise(noiseGrid3, x, y, z);
+                            if (dist > effectiveRadius - shellThickness) {
+                                // Generate color
+                                const isFloor = y < 0;
+                                const v = caveGen.pseudoRandom(x * 1000 + y * 100 + z);
+                                let r, g, b;
+                                if (isFloor) {
+                                    if (v > 0.95) { r = 180 + (v * 50) | 0; g = 170 + (v * 40) | 0; b = 140 + (v * 30) | 0; }
+                                    else if (v > 0.8) { r = 45 + (v * 15) | 0; g = 40 + (v * 15) | 0; b = 35 + (v * 10) | 0; }
+                                    else { r = 70 + (v * 25) | 0; g = 65 + (v * 20) | 0; b = 55 + (v * 20) | 0; }
+                                } else {
+                                    if (v > 0.97) {
+                                        const t = (v * 3) | 0;
+                                        if (t === 0) { r = 100; g = 150; b = 200; }
+                                        else if (t === 1) { r = 200; g = 150; b = 100; }
+                                        else { r = 150; g = 200; b = 150; }
+                                    } else if (v > 0.85) { r = 50 + (v * 20) | 0; g = 70 + (v * 25) | 0; b = 50 + (v * 15) | 0; }
+                                    else { const base = 80 + (v * 30) | 0; r = base; g = base - 5; b = base - 10; }
+                                }
+                                voxels.push({ x, y, z, r, g, b });
+                            }
+                        }
+                    }
+                }
+            }
+
+            processed++;
+            const now = performance.now();
+            if (now - lastUpdate > 100 && progress) {
+                progress(processed / totalSlices);
+                lastUpdate = now;
+                await this._delay(1);
+            }
+        }
+
+        return voxels;
+    }
+
+    // Apply a cave template to the world at a specific position
+    _applyCaveTemplate(voxels, centerX, centerY, centerZ) {
+        const world = this.engine.world;
+        for (const v of voxels) {
+            const wx = centerX + v.x;
+            const wy = centerY + v.y;
+            const wz = centerZ + v.z;
+            if (wx >= 0 && wx < world.worldSize &&
+                wy >= 0 && wy < world.worldSize &&
+                wz >= 0 && wz < world.worldSize) {
+                world.setVoxel(wx, wy, wz, v.r, v.g, v.b);
+            }
+        }
+    }
+
+    // First-time setup: generate and cache cave templates
+    async _firstTimeSetup(progress, startFrom) {
+        const totalCaves = CaveCache.NUM_CAVES;
+
+        document.getElementById('loading').querySelector('h2').textContent =
+            '🏝️ First-Time Setup';
+
+        for (let i = startFrom; i < totalCaves; i++) {
+            const seed = 10000 + i * 7919; // Different seed for each cave
+            const baseProgress = i / totalCaves;
+            const nextProgress = (i + 1) / totalCaves;
+
+            progress(baseProgress, `Generating cave template ${i + 1}/${totalCaves}...`,
+                'This only happens once!');
+            await this._delay(50);
+
+            console.time(`CACHE_CAVE_${i + 1}`);
+            const voxels = await this._generateCaveTemplate(seed, CAVE_RADIUS, (p) => {
+                const totalP = baseProgress + p * (nextProgress - baseProgress);
+                progress(totalP, `Generating cave template ${i + 1}/${totalCaves}: ${Math.floor(p * 100)}%`,
+                    'This only happens once!');
+            });
+            console.timeEnd(`CACHE_CAVE_${i + 1}`);
+
+            // Save to IndexedDB
+            progress(nextProgress - 0.01, `Saving cave ${i + 1} to cache...`, '');
+            await CaveCache.saveCave(i, voxels);
+            console.log(`Cave ${i + 1} cached: ${voxels.length} voxels`);
+        }
+
+        progress(1, 'Cave templates ready!', '');
+        await this._delay(300);
+
+        // Reset loading screen title
+        document.getElementById('loading').querySelector('h2').textContent =
+            '🏝️ Generating Island...';
+    }
+
+    // Calculate positions for connected cave spheres (worm structure)
+    _calculateCaveCenters() {
+        const centers = [];
+        const worldSize = this.engine.world.worldSize;
+
+        // Distance from island center to cave system
+        const distanceFromIsland = 330;
+
+        // Distance between cave centers (overlap controlled by CAVE_OVERLAP)
+        // At CAVE_OVERLAP=0.7, caves overlap by 30% of their radius
+        const stepDistance = CAVE_RADIUS * 2 * (1 - CAVE_OVERLAP);
+
+        // Calculate arc around the island
+        // Starting angle: pointing away from island on +X axis
+        const startAngle = 0;
+
+        // Arc step: how much angle to change between caves
+        // Smaller angle = tighter curve around island
+        const arcRadius = distanceFromIsland;
+        const arcStep = stepDistance / arcRadius;  // Radians per cave
+
+        for (let i = 0; i < CAVE_SIZE; i++) {
+            const angle = startAngle + i * arcStep;
+
+            // Position relative to island center (worldOffset)
+            const x = this.worldOffset + Math.cos(angle) * arcRadius;
+            const z = this.worldOffset + Math.sin(angle) * arcRadius;
+            const y = 140;  // Deep underwater, constant depth
+
+            // Verify cave doesn't exceed world max bounds
+            // (min bounds are handled by clipping in generation code)
+            if (x + CAVE_RADIUS < worldSize &&
+                z + CAVE_RADIUS < worldSize &&
+                x - CAVE_RADIUS >= 0 &&
+                z - CAVE_RADIUS >= 0) {
+                centers.push({ x: Math.floor(x), y, z: Math.floor(z) });
+            } else {
+                console.warn(`Cave ${i + 1} would exceed world bounds, skipping`);
+            }
+        }
+
+        return centers;
+    }
+
+    // Carve connecting tunnels between adjacent caves
+    _carveConnectingTunnels(caveCenters) {
+        const world = this.engine.world;
+        const tunnelRadius = 35;  // Large enough for comfortable swimming
+
+        for (let i = 0; i < caveCenters.length - 1; i++) {
+            const cave1 = caveCenters[i];
+            const cave2 = caveCenters[i + 1];
+
+            // Direction vector from cave1 to cave2
+            const dx = cave2.x - cave1.x;
+            const dy = cave2.y - cave1.y;
+            const dz = cave2.z - cave1.z;
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+            // Normalized direction
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const nz = dz / dist;
+
+            // Carve a cylindrical tunnel through BOTH cave shells
+            // Cave shells are at ~(CAVE_RADIUS - 16) to CAVE_RADIUS from their centers
+            // We need to carve from before cave2's shell to after cave1's shell
+            const shellThickness = 20;  // Buffer for shell + noise variations
+            const startDist = dist - CAVE_RADIUS - shellThickness;  // Before cave2's outer shell
+            const endDist = CAVE_RADIUS + shellThickness;  // After cave1's outer shell
+
+            // Step along the tunnel
+            const stepSize = 2;
+            for (let t = startDist; t <= endDist; t += stepSize) {
+                // Center point of this tunnel slice
+                const cx = cave1.x + nx * t;
+                const cy = cave1.y + ny * t;
+                const cz = cave1.z + nz * t;
+
+                // Carve a circular opening perpendicular to tunnel direction
+                for (let rx = -tunnelRadius; rx <= tunnelRadius; rx++) {
+                    for (let ry = -tunnelRadius; ry <= tunnelRadius; ry++) {
+                        for (let rz = -tunnelRadius; rz <= tunnelRadius; rz++) {
+                            const r = Math.sqrt(rx * rx + ry * ry + rz * rz);
+                            if (r <= tunnelRadius) {
+                                const vx = Math.floor(cx + rx);
+                                const vy = Math.floor(cy + ry);
+                                const vz = Math.floor(cz + rz);
+
+                                // Only clear if within world bounds
+                                if (vx >= 0 && vx < world.worldSize &&
+                                    vy >= 0 && vy < world.worldSize &&
+                                    vz >= 0 && vz < world.worldSize) {
+                                    // Clear the voxel (set to air)
+                                    world.setVoxel(vx, vy, vz, 0, 0, 0, 0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            console.log(`Carved tunnel between cave ${i + 1} and ${i + 2}`);
+        }
+    }
+
+    // Generates cave shell with ceiling openings (no formations - those are added separately)
+    // OPTIMIZED: Only iterates the shell band, not the entire cube volume
+    async _generateCaveWithProgress(centerX, centerY, centerZ, radius, progress, progressStart = 0.50, progressEnd = 0.80) {
+        const world = this.engine.world;
+
+        // Shell band parameters - account for max noise and thickness
+        // Noise can add up to 35 + 18 = 53, shell thickness is 10-16
+        const maxNoise = 55;
+        const maxShellThickness = 18;
+        const outerBound = radius + maxNoise;
+        const innerBound = Math.max(0, radius - maxNoise - maxShellThickness);
+
+        // Only iterate within the outer ellipsoid bounds
+        const minX = Math.max(0, Math.floor(centerX - outerBound));
+        const maxX = Math.min(world.worldSize - 1, Math.ceil(centerX + outerBound));
+
+        const totalSlices = maxX - minX + 1;
+        let processed = 0;
+        let lastUpdate = performance.now();
+
+        // Keep track of ceiling opening positions
+        const ceilingOpenings = [];
+        const numOpenings = 8 + Math.floor(this.caveGen.pseudoRandom(this.caveGen.seed + 5000) * 10);
+
+        for (let i = 0; i < numOpenings; i++) {
+            const angle = this.caveGen.pseudoRandom(this.caveGen.seed + i * 100) * Math.PI * 2;
+            const dist = this.caveGen.pseudoRandom(this.caveGen.seed + i * 100 + 50) * radius * 0.6;
+            const openingRadius = 10 + this.caveGen.pseudoRandom(this.caveGen.seed + i * 200) * 20;
+
+            ceilingOpenings.push({
+                x: centerX + Math.cos(angle) * dist,
+                z: centerZ + Math.sin(angle) * dist,
+                radius: openingRadius
+            });
+        }
+
+        // Pre-compute noise at sparse grid points (every STEP voxels) for fast lookup
+        const NOISE_STEP = 8;
+        const gridMinX = Math.floor(minX / NOISE_STEP);
+        const gridMaxX = Math.ceil(maxX / NOISE_STEP) + 1;
+        const gridMinY = Math.floor((centerY - outerBound / 1.3) / NOISE_STEP);
+        const gridMaxY = Math.ceil((centerY + outerBound / 1.3) / NOISE_STEP) + 1;
+        const gridMinZ = Math.floor((centerZ - outerBound) / NOISE_STEP);
+        const gridMaxZ = Math.ceil((centerZ + outerBound) / NOISE_STEP) + 1;
+
+        const gridSizeX = gridMaxX - gridMinX + 1;
+        const gridSizeY = gridMaxY - gridMinY + 1;
+        const gridSizeZ = gridMaxZ - gridMinZ + 1;
+
+        // Pre-compute all three noise layers
+        const noiseGrid1 = new Float32Array(gridSizeX * gridSizeY * gridSizeZ);
+        const noiseGrid2 = new Float32Array(gridSizeX * gridSizeY * gridSizeZ);
+        const noiseGrid3 = new Float32Array(gridSizeX * gridSizeY * gridSizeZ);
+
+        for (let gx = 0; gx < gridSizeX; gx++) {
+            for (let gy = 0; gy < gridSizeY; gy++) {
+                for (let gz = 0; gz < gridSizeZ; gz++) {
+                    const wx = (gridMinX + gx) * NOISE_STEP;
+                    const wy = (gridMinY + gy) * NOISE_STEP;
+                    const wz = (gridMinZ + gz) * NOISE_STEP;
+                    const idx = gx + gy * gridSizeX + gz * gridSizeX * gridSizeY;
+                    noiseGrid1[idx] = this.caveGen.noise3D(wx, wy, wz, 0.025, this.caveGen.seed) * 35;
+                    noiseGrid2[idx] = this.caveGen.noise3D(wx, wy, wz, 0.07, this.caveGen.seed + 1000) * 18;
+                    noiseGrid3[idx] = this.caveGen.noise3D(wx, wy, wz, 0.04, this.caveGen.seed + 2000) * 6;
+                }
+            }
+        }
+
+        // Trilinear interpolation helper
+        const sampleNoise = (grid, x, y, z) => {
+            const fx = x / NOISE_STEP - gridMinX;
+            const fy = y / NOISE_STEP - gridMinY;
+            const fz = z / NOISE_STEP - gridMinZ;
+
+            const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+            const x1 = x0 + 1, y1 = y0 + 1, z1 = z0 + 1;
+            const xd = fx - x0, yd = fy - y0, zd = fz - z0;
+
+            // Clamp to grid bounds
+            const cx0 = Math.max(0, Math.min(x0, gridSizeX - 1));
+            const cx1 = Math.max(0, Math.min(x1, gridSizeX - 1));
+            const cy0 = Math.max(0, Math.min(y0, gridSizeY - 1));
+            const cy1 = Math.max(0, Math.min(y1, gridSizeY - 1));
+            const cz0 = Math.max(0, Math.min(z0, gridSizeZ - 1));
+            const cz1 = Math.max(0, Math.min(z1, gridSizeZ - 1));
+
+            // Sample 8 corners
+            const c000 = grid[cx0 + cy0 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+            const c100 = grid[cx1 + cy0 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+            const c010 = grid[cx0 + cy1 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+            const c110 = grid[cx1 + cy1 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+            const c001 = grid[cx0 + cy0 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+            const c101 = grid[cx1 + cy0 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+            const c011 = grid[cx0 + cy1 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+            const c111 = grid[cx1 + cy1 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+
+            // Trilinear interpolation
+            const c00 = c000 * (1 - xd) + c100 * xd;
+            const c01 = c001 * (1 - xd) + c101 * xd;
+            const c10 = c010 * (1 - xd) + c110 * xd;
+            const c11 = c011 * (1 - xd) + c111 * xd;
+            const c0 = c00 * (1 - yd) + c10 * yd;
+            const c1 = c01 * (1 - yd) + c11 * yd;
+            return c0 * (1 - zd) + c1 * zd;
+        };
+
+        // Generate cave shell - optimized to ONLY iterate the shell band (skip hollow interior)
+        for (let x = minX; x <= maxX; x++) {
+            const dx = x - centerX;
+            const dx2 = dx * dx;
+
+            // Calculate z range for this x slice (ellipsoid intersection)
+            const maxZDist = Math.sqrt(Math.max(0, outerBound * outerBound - dx2));
+            const zStart = Math.max(0, Math.floor(centerZ - maxZDist));
+            const zEnd = Math.min(world.worldSize - 1, Math.ceil(centerZ + maxZDist));
+
+            for (let z = zStart; z <= zEnd; z++) {
+                const dz = z - centerZ;
+                const distXZ2 = dx2 + dz * dz;
+
+                // Skip if XZ distance exceeds outer bound
+                if (distXZ2 > outerBound * outerBound) continue;
+
+                // Calculate outer Y extent (where dist = outerBound)
+                const outerDY = Math.sqrt(Math.max(0, outerBound * outerBound - distXZ2)) / 1.3;
+
+                // Calculate inner Y extent (where dist = innerBound) - this is the hollow part to skip
+                const innerDY = distXZ2 < innerBound * innerBound
+                    ? Math.sqrt(innerBound * innerBound - distXZ2) / 1.3
+                    : 0;
+
+                // Process shell in two Y ranges: bottom shell and top shell (skip hollow middle)
+                const yRanges = [];
+
+                if (innerDY > 0) {
+                    // There's a hollow interior - create two separate ranges
+                    // Bottom shell: from -outerDY to -innerDY
+                    yRanges.push([
+                        Math.max(0, Math.floor(centerY - outerDY)),
+                        Math.min(world.worldSize - 1, Math.ceil(centerY - innerDY))
+                    ]);
+                    // Top shell: from +innerDY to +outerDY
+                    yRanges.push([
+                        Math.max(0, Math.floor(centerY + innerDY)),
+                        Math.min(world.worldSize - 1, Math.ceil(centerY + outerDY))
+                    ]);
+                } else {
+                    // No hollow interior at this XZ (we're at the edge) - single range
+                    yRanges.push([
+                        Math.max(0, Math.floor(centerY - outerDY)),
+                        Math.min(world.worldSize - 1, Math.ceil(centerY + outerDY))
+                    ]);
+                }
+
+                // Process each Y range
+                for (const [yStart, yEnd] of yRanges) {
+                    for (let y = yStart; y <= yEnd; y++) {
+                        const dy = y - centerY;
+                        const distY = Math.abs(dy) * 1.3;
+                        const dist = Math.sqrt(distXZ2 + distY * distY);
+
+                        // Safety check (should rarely trigger now)
+                        if (dist < innerBound || dist > outerBound) continue;
+
+                        // Sample pre-computed noise (fast interpolation instead of expensive trig)
+                        const noise = sampleNoise(noiseGrid1, x, y, z);
+                        const wallNoise = sampleNoise(noiseGrid2, x, y, z);
+                        const effectiveRadius = radius + noise + wallNoise;
+
+                        // Skip if outside effective radius
+                        if (dist >= effectiveRadius) continue;
+
+                        // Check if in ceiling opening area
+                        let inOpening = false;
+                        if (y > centerY + radius * 0.3) {
+                            for (const opening of ceilingOpenings) {
+                                const openDist = Math.sqrt(
+                                    Math.pow(x - opening.x, 2) +
+                                    Math.pow(z - opening.z, 2)
+                                );
+                                if (openDist < opening.radius) {
+                                    const edgeFactor = openDist / opening.radius;
+                                    const heightFactor = (y - (centerY + radius * 0.3)) / (radius * 0.4);
+                                    if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
+                                        inOpening = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!inOpening) {
+                            // Shell thickness check (using pre-computed noise)
+                            const shellThickness = 10 + sampleNoise(noiseGrid3, x, y, z);
+
+                            if (dist > effectiveRadius - shellThickness) {
+                                // Place cave wall
+                                this.caveGen._placeRockVoxel(world, x, y, z, y < centerY);
+                            }
+                        }
+                    }
+                }
+            }
+
+            processed++;
+            const now = performance.now();
+            if (now - lastUpdate > 80) {
+                const p = progressStart + (processed / totalSlices) * (progressEnd - progressStart);
+                progress(p, `Carving cave: ${Math.floor(processed/totalSlices*100)}%`,
+                    `${processed}/${totalSlices} slices`);
+                lastUpdate = now;
+                await this._delay(1);
+            }
+        }
+        // Note: Formations and details are generated separately after all cave shells are created
+    }
+
+    _resize() {
+        const c = this.canvas.parentElement;
+        this.engine.resize(c.clientWidth, c.clientHeight);
+    }
+
+    _checkCollision(x, y, z) {
+        const hw = this.player.width / 2;
+        const points = [
+            [x-hw, y, z-hw], [x+hw, y, z-hw], [x-hw, y, z+hw], [x+hw, y, z+hw],
+            [x-hw, y+0.9, z-hw], [x+hw, y+0.9, z-hw], [x-hw, y+0.9, z+hw], [x+hw, y+0.9, z+hw],
+            [x-hw, y+1.8, z-hw], [x+hw, y+1.8, z-hw], [x-hw, y+1.8, z+hw], [x+hw, y+1.8, z+hw],
+        ];
+        for (const [px, py, pz] of points) {
+            const v = this.engine.world.getVoxel(Math.floor(px), Math.floor(py), Math.floor(pz));
+            if (v && v.a > 0) {
+                // Check if it's a water voxel - allow passing through
+                if (this._isWaterVoxel(v)) continue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    _isWaterVoxel(v) {
+        // Water voxels have specific color range
+        return v.r >= 25 && v.r <= 40 &&
+               v.g >= 80 && v.g <= 100 &&
+               v.b >= 160 && v.b <= 180;
+    }
+
+    _isOnGround() {
+        const hw = this.player.width / 2;
+        const y = this.player.y - 0.1;
+        const points = [
+            [this.player.x-hw, y, this.player.z-hw],
+            [this.player.x+hw, y, this.player.z-hw],
+            [this.player.x-hw, y, this.player.z+hw],
+            [this.player.x+hw, y, this.player.z+hw],
+            [this.player.x, y, this.player.z],
+        ];
+        for (const [px, py, pz] of points) {
+            const v = this.engine.world.getVoxel(Math.floor(px), Math.floor(py), Math.floor(pz));
+            if (v && v.a > 0) {
+                // Don't count water as ground
+                if (this._isWaterVoxel(v)) continue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    _updatePlayer(dt) {
+        // Update environment state
+        this.player.updateEnvironment();
+
+        // Update rendering based on environment
+        this._updateEnvironmentRendering();
+
+        this.player.rotate(this.mouseDelta.x * 0.002, this.mouseDelta.y * 0.002);
+        this.mouseDelta.x = this.mouseDelta.y = 0;
+
+        if (this.player.isUnderwater) {
+            // SWIM MODE - 3D movement like flying
+            this._updateSwimMovement(dt);
+        } else {
+            // SURFACE MODE - normal walking physics
+            this._updateSurfaceMovement(dt);
+        }
+
+        // Apply movement with collision
+        const newX = this.player.x + this.player.vx * dt;
+        const newY = this.player.y + this.player.vy * dt;
+        const newZ = this.player.z + this.player.vz * dt;
+
+        if (!this._checkCollision(newX, this.player.y, this.player.z)) {
+            this.player.x = newX;
+        }
+        if (!this._checkCollision(this.player.x, this.player.y, newZ)) {
+            this.player.z = newZ;
+        }
+        if (!this._checkCollision(this.player.x, newY, this.player.z)) {
+            this.player.y = newY;
+        } else {
+            if (this.player.vy < 0) this.player.onGround = true;
+            this.player.vy = 0;
+        }
+
+        if (!this.player.isUnderwater) {
+            this.player.onGround = this._isOnGround();
+        }
+
+        // Update camera
+        const [ex, ey, ez] = this.player.getEyePos();
+        this.engine.camera.setPosition(ex, ey, ez);
+        this.engine.camera.yaw = this.player.yaw;
+        this.engine.camera.pitch = this.player.pitch;
+
+        // Update flashlight position/direction
+        if (this.engine.settings.lanternEnabled) {
+            this.engine.settings.lanternPos = [ex, ey, ez];
+            const [fx, fy, fz] = this.player.getForward3D();
+            this.engine.settings.lanternDir = [fx, fy, fz];
+        }
+
+        // Track max depth
+        if (this.player.depth > this.maxDepthReached) {
+            this.maxDepthReached = this.player.depth;
+        }
+    }
+
+    _updateSwimMovement(dt) {
+        // 3D swimming - can move in direction you're looking
+        const [fx, fy, fz] = this.player.getForward3D();
+        const [rx, _, rz] = [Math.cos(this.player.yaw), 0, -Math.sin(this.player.yaw)];
+
+        let mx = 0, my = 0, mz = 0;
+
+        // Forward/back moves in look direction
+        if (this.keys['KeyW']) { mx += fx; my += fy; mz += fz; }
+        if (this.keys['KeyS']) { mx -= fx; my -= fy; mz -= fz; }
+
+        // Strafe left/right
+        if (this.keys['KeyA']) { mx -= rx; mz -= rz; }
+        if (this.keys['KeyD']) { mx += rx; mz += rz; }
+
+        // Direct up/down
+        if (this.keys['Space']) {
+            // Near surface? Give a strong boost to breach!
+            if (this.player.isNearSurface()) {
+                my += 2.5;  // Extra strong upward push near surface
+            } else {
+                my += 1;
+            }
+        }
+        if (this.keys['ShiftLeft'] || this.keys['ControlLeft']) { my -= 1; }
+
+        // Normalize horizontal movement only
+        const hLen = Math.sqrt(mx*mx + mz*mz);
+        if (hLen > 1) { mx /= hLen; mz /= hLen; }
+
+        const speed = this.keys['ShiftLeft'] ? this.player.fastSwimSpeed : this.player.swimSpeed;
+        this.player.vx = mx * speed;
+        this.player.vz = mz * speed;
+
+        // Vertical speed - stronger when breaching
+        if (this.keys['Space'] && this.player.isNearSurface()) {
+            this.player.vy = this.player.surfaceBoost;  // Strong breach
+        } else {
+            this.player.vy = my * speed;
+        }
+
+        // Slight buoyancy when not pressing anything (slow rise)
+        if (!this.keys['Space'] && !this.keys['ShiftLeft'] && !this.keys['ControlLeft'] &&
+            mx === 0 && mz === 0 && my === 0) {
+            this.player.vy = 0.5;  // Gentle float up
+        }
+    }
+
+    _updateSurfaceMovement(dt) {
+        const [fx, fz] = this.player.getForward();
+        const [rx, rz] = this.player.getRight();
+        let mx = 0, mz = 0;
+
+        if (this.keys['KeyW']) { mx += fx; mz += fz; }
+        if (this.keys['KeyS']) { mx -= fx; mz -= fz; }
+        if (this.keys['KeyA']) { mx -= rx; mz -= rz; }
+        if (this.keys['KeyD']) { mx += rx; mz += rz; }
+
+        const len = Math.sqrt(mx*mx + mz*mz);
+        if (len > 0) { mx /= len; mz /= len; }
+
+        const speed = this.keys['ShiftLeft'] ? this.player.sprintSpeed : this.player.walkSpeed;
+        this.player.vx = mx * speed;
+        this.player.vz = mz * speed;
+
+        // Gravity
+        this.player.vy -= this.player.gravity * dt;
+        this.player.vy = Math.max(this.player.vy, -30);
+    }
+
+    _updateEnvironmentRendering() {
+        const underwater = this.player.isUnderwater;
+        const depth = this.player.depth;
+
+        // Update underwater overlay
+        const overlay = document.getElementById('underwater-overlay');
+        overlay.classList.toggle('active', underwater);
+        overlay.classList.toggle('deep', underwater && depth > 15);
+        document.getElementById('depth-meter').classList.toggle('visible', underwater);
+
+        if (underwater) {
+            // Transition zone: first 5m stays relatively bright, then darkens
+            const TRANSITION_DEPTH = 5.0;
+            const transitionFactor = Math.max(0, Math.min((depth - TRANSITION_DEPTH) / (MAX_DEPTH - TRANSITION_DEPTH), 1.0));
+            const shallowFactor = Math.max(0, Math.min(depth / TRANSITION_DEPTH, 1.0));
+
+            // Fog increases with depth (water absorbs light)
+            // Start with lighter fog near surface
+            const fogDensity = 1.0 + shallowFactor * 1.5 + transitionFactor * 5.5;
+            this.engine.settings.fogDensity = fogDensity;
+
+            // Sky color: blend from surface colors to underwater colors
+            // Surface: [0.4, 0.7, 1.0] -> Shallow underwater: [0.2, 0.5, 0.8] -> Deep: very dark
+            const surfaceTop = [0.4, 0.7, 1.0];
+            const shallowTop = [0.15, 0.4, 0.7];
+            const deepTop = [0.0, 0.05, 0.12];
+
+            const surfaceBot = [0.7, 0.85, 1.0];
+            const shallowBot = [0.1, 0.35, 0.6];
+            const deepBot = [0.0, 0.02, 0.06];
+
+            // First blend surface -> shallow, then shallow -> deep
+            let topR, topG, topB, botR, botG, botB;
+
+            if (depth < TRANSITION_DEPTH) {
+                // Blend surface to shallow
+                topR = surfaceTop[0] + (shallowTop[0] - surfaceTop[0]) * shallowFactor;
+                topG = surfaceTop[1] + (shallowTop[1] - surfaceTop[1]) * shallowFactor;
+                topB = surfaceTop[2] + (shallowTop[2] - surfaceTop[2]) * shallowFactor;
+                botR = surfaceBot[0] + (shallowBot[0] - surfaceBot[0]) * shallowFactor;
+                botG = surfaceBot[1] + (shallowBot[1] - surfaceBot[1]) * shallowFactor;
+                botB = surfaceBot[2] + (shallowBot[2] - surfaceBot[2]) * shallowFactor;
+            } else {
+                // Blend shallow to deep
+                topR = shallowTop[0] + (deepTop[0] - shallowTop[0]) * transitionFactor;
+                topG = shallowTop[1] + (deepTop[1] - shallowTop[1]) * transitionFactor;
+                topB = shallowTop[2] + (deepTop[2] - shallowTop[2]) * transitionFactor;
+                botR = shallowBot[0] + (deepBot[0] - shallowBot[0]) * transitionFactor;
+                botG = shallowBot[1] + (deepBot[1] - shallowBot[1]) * transitionFactor;
+                botB = shallowBot[2] + (deepBot[2] - shallowBot[2]) * transitionFactor;
+            }
+
+            this.engine.settings.skyColorTop = [topR, topG, topB];
+            this.engine.settings.skyColorBottom = [botR, botG, botB];
+
+            // Keep shadows enabled underwater for consistent lighting
+            this.engine.settings.enableShadows = true;
+
+            // Update depth meter display
+            const meterPercent = Math.min(depth / MAX_DEPTH, 1.0);
+            document.getElementById('depth-fill').style.height = (meterPercent * 100) + '%';
+            document.getElementById('depth-marker').style.bottom =
+                (100 - meterPercent * 100) + 'px';
+        } else {
+            // Above water - bright sky
+            this.engine.settings.fogDensity = 0.5;
+            this.engine.settings.skyColorTop = [0.4, 0.7, 1.0];
+            this.engine.settings.skyColorBottom = [0.7, 0.85, 1.0];
+            this.engine.settings.enableShadows = true;
+        }
+    }
+
+    _updateStats() {
+        this.frameCount++;
+        const now = performance.now();
+        if (now - this.lastFpsTime >= 1000) {
+            this.fps = this.frameCount;
+            this.frameCount = 0;
+            this.lastFpsTime = now;
+        }
+
+        document.getElementById('fps').textContent = this.fps;
+        document.getElementById('frame-time').textContent = (1000 / Math.max(1, this.fps)).toFixed(1) + ' ms';
+        document.getElementById('player-pos').textContent =
+            `(${this.player.x.toFixed(0)}, ${this.player.y.toFixed(0)}, ${this.player.z.toFixed(0)})`;
+
+        // Depth display
+        const depthDisplay = document.getElementById('depth-display');
+        depthDisplay.textContent = this.player.isUnderwater ?
+            `${this.player.depth.toFixed(1)}m` : 'Surface';
+
+        // Environment status
+        const envStatus = document.getElementById('environment-status');
+        if (this.player.isUnderwater) {
+            if (this.player.depth > 40) {
+                envStatus.textContent = '🌊 Deep Water';
+                envStatus.className = 'stat-value underwater';
+            } else if (this.player.depth > 15) {
+                envStatus.textContent = '🌊 Underwater';
+                envStatus.className = 'stat-value underwater';
+            } else {
+                envStatus.textContent = '🏊 Shallow';
+                envStatus.className = 'stat-value underwater';
+            }
+        } else {
+            envStatus.textContent = '🏝️ Surface';
+            envStatus.className = 'stat-value surface';
+        }
+
+        // Visibility based on depth
+        const visDisplay = document.getElementById('visibility-display');
+        if (this.player.isUnderwater) {
+            if (this.player.depth > 40) {
+                visDisplay.textContent = 'Very Low';
+            } else if (this.player.depth > 25) {
+                visDisplay.textContent = 'Low';
+            } else if (this.player.depth > 10) {
+                visDisplay.textContent = 'Medium';
+            } else {
+                visDisplay.textContent = 'Good';
+            }
+        } else {
+            visDisplay.textContent = 'Clear';
+        }
+
+        document.getElementById('voxel-count').textContent = this.engine.getVoxelCount().toLocaleString();
+        document.getElementById('memory-usage').textContent = this.engine.getMemoryUsage().totalMB.toFixed(2) + ' MB';
+    }
+
+    run() {
+        let lastTime = performance.now();
+
+        const loop = () => {
+            const now = performance.now();
+            const dt = Math.min((now - lastTime) / 1000, 0.1);
+            lastTime = now;
+
+            this._updatePlayer(dt);
+            this.engine.render();
+            this._updateStats();
+
+            requestAnimationFrame(loop);
+        };
+
+        loop();
+    }
+}
+
+// ============================================================
+// Start
+// ============================================================
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const game = new SeaCaveGame('canvas');
+        await game.init();
+        game.run();
+    } catch (err) {
+        console.error(err);
+        document.getElementById('loading-text').textContent = 'Error: ' + err.message;
+        document.getElementById('loading-text').style.color = '#ff6b6b';
+    }
+});
