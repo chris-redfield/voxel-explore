@@ -248,6 +248,22 @@ class SeaCaveGame {
         // Stairs grid is 11x48x11, centered at same position as lighthouse
         await this.loadVoxelModel('assets/lighthouse_stairs.json', lighthouseX, lighthouseY, lighthouseZ);
 
+        // Place cabin on the opposite side of island from lighthouse
+        // Lighthouse is at +70, +20 (east), so cabin goes at -60, -15 (west)
+        // Staying within islandFactor < 0.65 to be on grass, not sand
+        progress(0.875, 'Loading cabin...', '');
+        await this._delay(10);
+        const cabinX = this.worldOffset - 60;   // West side of island (opposite lighthouse)
+        const cabinZ = this.worldOffset - 15;   // Slightly north
+        const cabinNoiseX = cabinX - this.worldOffset;
+        const cabinNoiseZ = cabinZ - this.worldOffset;
+        const cabinGroundHeight = this.terrain.getHeight(cabinNoiseX, cabinNoiseZ);
+        // Cabin model height is 16, add half minus 1 to place bottom on ground
+        const cabinY = cabinGroundHeight + 7;
+
+        console.log(`Placing cabin at ground height: ${cabinGroundHeight}`);
+        await this.loadVoxelModel('assets/cabin.json', cabinX, cabinY, cabinZ);
+
         const genTime = performance.now();
         progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
         await this._delay(50);
