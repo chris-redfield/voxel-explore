@@ -1352,6 +1352,32 @@
             console.log(`Placing ship at seafloor height: ${seafloorHeight}`);
             await this.loadVoxelModel('assets/ship.json', shipX, shipY, shipZ, 1, shipTilt);
 
+            // Place ancient stonegate ruins near the ship
+            const ruinsX = shipX - 120;  // Further west of ship
+            const ruinsZ = shipZ + 100;  // Further south of ship
+            const ruinsNoiseX = ruinsX - this.worldOffset;
+            const ruinsNoiseZ = ruinsZ - this.worldOffset;
+            const ruinsFloorHeight = this.terrain.getHeight(ruinsNoiseX, ruinsNoiseZ);
+            // Stonegate is 40x39x16, sink 5 voxels into ground (20 - 5 = 15) for ancient look
+            const ruinsY = ruinsFloorHeight + 15;
+            console.log(`Placing ruins at seafloor height: ${ruinsFloorHeight}`);
+            await this.loadVoxelModel('assets/stonegate.json', ruinsX, ruinsY, ruinsZ, 1, 0, 45);
+
+            // Place roman poles - far from both ship and portal, in open seafloor
+            // Position them west of ruins, far from ship (which is east/north)
+            // Pole 1: Standing upright
+            const pole1X = ruinsX - 100;  // Far west of ruins
+            const pole1Z = ruinsZ - 60;   // Slightly north
+            const pole1FloorHeight = this.terrain.getHeight(pole1X - this.worldOffset, pole1Z - this.worldOffset);
+            // Single column is smaller now, height ~28, so half is 14
+            await this.loadVoxelModel('assets/roman-pole.json', pole1X, pole1FloorHeight + 14, pole1Z);
+
+            // Pole 2: Fallen over (90 degree tilt - lying on seafloor)
+            const pole2X = pole1X - 50;   // Further west
+            const pole2Z = pole1Z + 40;   // Slightly south
+            const pole2FloorHeight = this.terrain.getHeight(pole2X - this.worldOffset, pole2Z - this.worldOffset);
+            await this.loadVoxelModel('assets/roman-pole.json', pole2X, pole2FloorHeight + 4, pole2Z, 1, 90);
+
             // Place lighthouse on the island, near the edge but before the beach
             const lighthouseX = this.worldOffset + 70;   // East side of island
             const lighthouseZ = this.worldOffset + 20;   // Slightly south
@@ -1440,8 +1466,8 @@
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
         // Load a voxel model from JSON and place it in the world
-        // tiltAngle: rotation in degrees around the Z axis (roll/tilt left-right)
-        async loadVoxelModel(jsonPath, offsetX, offsetY, offsetZ, scale = 1, tiltAngle = 0) {
+        // tiltAngle: rotation around Z axis (roll), yawAngle: around Y axis, pitchAngle: around X axis
+        async loadVoxelModel(jsonPath, offsetX, offsetY, offsetZ, scale = 1, tiltAngle = 0, yawAngle = 0, pitchAngle = 0) {
             console.log(`Loading voxel model: ${jsonPath}`);
 
             try {
@@ -1458,12 +1484,18 @@
                 const centerY = gridSize.y / 2;
                 const centerZ = gridSize.z / 2;
 
-                // Convert tilt angle to radians
+                // Convert angles to radians
                 const tiltRad = tiltAngle * Math.PI / 180;
                 const cosT = Math.cos(tiltRad);
                 const sinT = Math.sin(tiltRad);
+                const yawRad = yawAngle * Math.PI / 180;
+                const cosY = Math.cos(yawRad);
+                const sinY = Math.sin(yawRad);
+                const pitchRad = pitchAngle * Math.PI / 180;
+                const cosP = Math.cos(pitchRad);
+                const sinP = Math.sin(pitchRad);
 
-                console.log(`  Placing ${voxels.length} voxels at (${offsetX}, ${offsetY}, ${offsetZ}), tilt: ${tiltAngle}°`);
+                console.log(`  Placing ${voxels.length} voxels at (${offsetX}, ${offsetY}, ${offsetZ}), tilt: ${tiltAngle}°, yaw: ${yawAngle}°, pitch: ${pitchAngle}°`);
 
                 let placed = 0;
                 for (const v of voxels) {
@@ -1478,6 +1510,22 @@
                         const newLy = lx * sinT + ly * cosT;
                         lx = newLx;
                         ly = newLy;
+                    }
+
+                    // Apply yaw rotation around Y axis
+                    if (yawAngle !== 0) {
+                        const newLx = lx * cosY + lz * sinY;
+                        const newLz = -lx * sinY + lz * cosY;
+                        lx = newLx;
+                        lz = newLz;
+                    }
+
+                    // Apply pitch rotation around X axis
+                    if (pitchAngle !== 0) {
+                        const newLy = ly * cosP - lz * sinP;
+                        const newLz = ly * sinP + lz * cosP;
+                        ly = newLy;
+                        lz = newLz;
                     }
 
                     // Apply scale and offset

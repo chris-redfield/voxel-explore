@@ -129,14 +129,16 @@ def parse_mtl(mtl_path: str) -> Dict[str, Tuple[int, int, int]]:
     return materials
 
 
-def parse_obj(obj_path: str, exclude_materials: List[str] = None) -> Tuple[List[Triangle], BoundingBox]:
+def parse_obj(obj_path: str, exclude_materials: List[str] = None, include_objects: List[str] = None) -> Tuple[List[Triangle], BoundingBox]:
     """Parse OBJ file and return list of triangles."""
     vertices = []
     triangles = []
     materials = {}
     current_color = (128, 128, 128)  # Default gray
     current_material = None
+    current_object = None
     exclude_materials = exclude_materials or []
+    include_objects = include_objects or []
     excluded_count = 0
 
     # Look for MTL file
@@ -191,9 +193,18 @@ def parse_obj(obj_path: str, exclude_materials: List[str] = None) -> Tuple[List[
                         80 + ((h >> 16) % 120)
                     )
 
+            elif line.startswith('o '):
+                # Object name
+                current_object = line[2:].strip()
+
             elif line.startswith('f '):
                 # Skip faces from excluded materials
                 if current_material and any(excl.lower() in current_material.lower() for excl in exclude_materials):
+                    excluded_count += 1
+                    continue
+                # Skip faces from non-included objects (if filter is set)
+                # Use exact match (case-insensitive) to avoid partial matches
+                if include_objects and current_object and not any(inc.lower() == current_object.lower() for inc in include_objects):
                     excluded_count += 1
                     continue
 
@@ -397,6 +408,12 @@ def main():
                         help='Output compact array format instead of objects')
     parser.add_argument('-e', '--exclude', nargs='+', default=[],
                         help='Material names to exclude (e.g., --exclude sails)')
+    parser.add_argument('-i', '--include-objects', nargs='+', default=[],
+                        help='Only include these objects (e.g., --include-objects Plane)')
+    parser.add_argument('--color', type=str, default=None,
+                        help='Override color as R,G,B (e.g., --color 128,128,128)')
+    parser.add_argument('--rotate-y', type=float, default=0,
+                        help='Rotate model around Y axis in degrees')
 
     args = parser.parse_args()
 
@@ -410,14 +427,48 @@ def main():
         print(f"Excluding materials: {args.exclude}")
 
     # Parse OBJ
-    triangles, bbox = parse_obj(args.input, args.exclude)
+    triangles, bbox = parse_obj(args.input, args.exclude, args.include_objects)
 
     if not triangles:
         print("Error: No triangles found in OBJ file")
         sys.exit(1)
 
+    # Rotate around Y axis if requested
+    if args.rotate_y != 0:
+        angle_rad = math.radians(args.rotate_y)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        print(f"Rotating {args.rotate_y} degrees around Y axis...")
+        rotated_triangles = []
+        for tri in triangles:
+            def rotate_y(v):
+                return Vec3(
+                    v.x * cos_a + v.z * sin_a,
+                    v.y,
+                    -v.x * sin_a + v.z * cos_a
+                )
+            rotated_triangles.append(Triangle(
+                rotate_y(tri.v0), rotate_y(tri.v1), rotate_y(tri.v2), tri.color
+            ))
+        triangles = rotated_triangles
+        # Recalculate bounding box after rotation
+        all_verts = []
+        for tri in triangles:
+            all_verts.extend([tri.v0, tri.v1, tri.v2])
+        bbox = BoundingBox(
+            Vec3(min(v.x for v in all_verts), min(v.y for v in all_verts), min(v.z for v in all_verts)),
+            Vec3(max(v.x for v in all_verts), max(v.y for v in all_verts), max(v.z for v in all_verts))
+        )
+
     # Voxelize
     voxels, grid_size = voxelize(triangles, bbox, args.resolution)
+
+    # Override color if requested
+    if args.color:
+        r, g, b = [int(c) for c in args.color.split(',')]
+        print(f"Overriding color to RGB({r}, {g}, {b})")
+        for v in voxels:
+            v['r'], v['g'], v['b'] = r, g, b
 
     # Save output
     print(f"Saving to {output_path}...")
