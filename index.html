@@ -1174,6 +1174,7 @@
             await this._delay(50);
 
             // Generate terrain with progress callback
+            console.time('TERRAIN');
             let lastUpdate = performance.now();
             this.terrain.generateWorld(this.engine.world, this.worldOffset, (p) => {
                 const now = performance.now();
@@ -1184,6 +1185,7 @@
                     lastUpdate = now;
                 }
             });
+            console.timeEnd('TERRAIN');
 
             // Generate underwater cave system - worm-like structure of connected spheres
             progress(0.48, 'Creating underwater caves...', '');
@@ -1197,6 +1199,7 @@
             this.caveCenters = caveCenters;
 
             // Generate each cave sphere
+            console.time('CAVES_TOTAL');
             for (let i = 0; i < caveCenters.length; i++) {
                 const cave = caveCenters[i];
                 const progressStart = 0.48 + (i / caveCenters.length) * 0.32;
@@ -1204,34 +1207,43 @@
                 progress(progressStart, `Creating cave ${i + 1}/${caveCenters.length}...`, '');
                 await this._delay(10);
 
+                console.time(`CAVE_${i + 1}_SHELL`);
                 await this._generateCaveWithProgress(
                     cave.x, cave.y, cave.z, CAVE_RADIUS,
                     progress, progressStart, progressStart + (0.32 / caveCenters.length)
                 );
+                console.timeEnd(`CAVE_${i + 1}_SHELL`);
 
                 console.log(`Cave ${i + 1} generated at (${cave.x}, ${cave.y}, ${cave.z})`);
             }
+            console.timeEnd('CAVES_TOTAL');
 
             // Carve connecting tunnels between adjacent caves
             if (caveCenters.length > 1) {
                 progress(0.81, 'Carving connecting tunnels...', '');
                 await this._delay(10);
+                console.time('TUNNELS');
                 this._carveConnectingTunnels(caveCenters);
+                console.timeEnd('TUNNELS');
             }
 
             // Generate formations for all caves
             progress(0.82, 'Growing stalagmites and stalactites...', '');
             await this._delay(10);
+            console.time('FORMATIONS');
             for (const cave of caveCenters) {
                 this.caveGen._generateFormations(this.engine.world, cave.x, cave.y, cave.z, CAVE_RADIUS);
             }
+            console.timeEnd('FORMATIONS');
 
             // Add ground details for all caves
             progress(0.86, 'Adding cave details...', '');
             await this._delay(10);
+            console.time('DETAILS');
             for (const cave of caveCenters) {
                 this.caveGen._addGroundDetails(this.engine.world, cave.x, cave.y, cave.z, CAVE_RADIUS);
             }
+            console.timeEnd('DETAILS');
 
             console.log(`Cave system generated: ${caveCenters.length} connected caves`);
 
@@ -1240,7 +1252,9 @@
             await this._delay(50);
 
             // Upload to GPU
+            console.time('GPU_UPLOAD');
             this.engine.uploadWorld();
+            console.timeEnd('GPU_UPLOAD');
 
             const uploadTime = performance.now();
             progress(0.95, 'Setting spawn point...', `Upload: ${((uploadTime - genTime)/1000).toFixed(1)}s`);
@@ -1411,14 +1425,20 @@
         }
 
         // Generates cave shell with ceiling openings (no formations - those are added separately)
+        // OPTIMIZED: Only iterates the shell band, not the entire cube volume
         async _generateCaveWithProgress(centerX, centerY, centerZ, radius, progress, progressStart = 0.50, progressEnd = 0.80) {
             const world = this.engine.world;
-            const minX = Math.max(0, centerX - radius);
-            const maxX = Math.min(world.worldSize - 1, centerX + radius);
-            const minY = Math.max(0, centerY - radius);
-            const maxY = Math.min(world.worldSize - 1, centerY + radius);
-            const minZ = Math.max(0, centerZ - radius);
-            const maxZ = Math.min(world.worldSize - 1, centerZ + radius);
+
+            // Shell band parameters - account for max noise and thickness
+            // Noise can add up to 35 + 18 = 53, shell thickness is 10-16
+            const maxNoise = 55;
+            const maxShellThickness = 18;
+            const outerBound = radius + maxNoise;
+            const innerBound = Math.max(0, radius - maxNoise - maxShellThickness);
+
+            // Only iterate within the outer ellipsoid bounds
+            const minX = Math.max(0, Math.floor(centerX - outerBound));
+            const maxX = Math.min(world.worldSize - 1, Math.ceil(centerX + outerBound));
 
             const totalSlices = maxX - minX + 1;
             let processed = 0;
@@ -1440,52 +1460,169 @@
                 });
             }
 
-            // Generate cave shell
+            // Pre-compute noise at sparse grid points (every STEP voxels) for fast lookup
+            const NOISE_STEP = 8;
+            const gridMinX = Math.floor(minX / NOISE_STEP);
+            const gridMaxX = Math.ceil(maxX / NOISE_STEP) + 1;
+            const gridMinY = Math.floor((centerY - outerBound / 1.3) / NOISE_STEP);
+            const gridMaxY = Math.ceil((centerY + outerBound / 1.3) / NOISE_STEP) + 1;
+            const gridMinZ = Math.floor((centerZ - outerBound) / NOISE_STEP);
+            const gridMaxZ = Math.ceil((centerZ + outerBound) / NOISE_STEP) + 1;
+
+            const gridSizeX = gridMaxX - gridMinX + 1;
+            const gridSizeY = gridMaxY - gridMinY + 1;
+            const gridSizeZ = gridMaxZ - gridMinZ + 1;
+
+            // Pre-compute all three noise layers
+            const noiseGrid1 = new Float32Array(gridSizeX * gridSizeY * gridSizeZ);
+            const noiseGrid2 = new Float32Array(gridSizeX * gridSizeY * gridSizeZ);
+            const noiseGrid3 = new Float32Array(gridSizeX * gridSizeY * gridSizeZ);
+
+            for (let gx = 0; gx < gridSizeX; gx++) {
+                for (let gy = 0; gy < gridSizeY; gy++) {
+                    for (let gz = 0; gz < gridSizeZ; gz++) {
+                        const wx = (gridMinX + gx) * NOISE_STEP;
+                        const wy = (gridMinY + gy) * NOISE_STEP;
+                        const wz = (gridMinZ + gz) * NOISE_STEP;
+                        const idx = gx + gy * gridSizeX + gz * gridSizeX * gridSizeY;
+                        noiseGrid1[idx] = this.caveGen.noise3D(wx, wy, wz, 0.025, this.caveGen.seed) * 35;
+                        noiseGrid2[idx] = this.caveGen.noise3D(wx, wy, wz, 0.07, this.caveGen.seed + 1000) * 18;
+                        noiseGrid3[idx] = this.caveGen.noise3D(wx, wy, wz, 0.04, this.caveGen.seed + 2000) * 6;
+                    }
+                }
+            }
+
+            // Trilinear interpolation helper
+            const sampleNoise = (grid, x, y, z) => {
+                const fx = x / NOISE_STEP - gridMinX;
+                const fy = y / NOISE_STEP - gridMinY;
+                const fz = z / NOISE_STEP - gridMinZ;
+
+                const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+                const x1 = x0 + 1, y1 = y0 + 1, z1 = z0 + 1;
+                const xd = fx - x0, yd = fy - y0, zd = fz - z0;
+
+                // Clamp to grid bounds
+                const cx0 = Math.max(0, Math.min(x0, gridSizeX - 1));
+                const cx1 = Math.max(0, Math.min(x1, gridSizeX - 1));
+                const cy0 = Math.max(0, Math.min(y0, gridSizeY - 1));
+                const cy1 = Math.max(0, Math.min(y1, gridSizeY - 1));
+                const cz0 = Math.max(0, Math.min(z0, gridSizeZ - 1));
+                const cz1 = Math.max(0, Math.min(z1, gridSizeZ - 1));
+
+                // Sample 8 corners
+                const c000 = grid[cx0 + cy0 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+                const c100 = grid[cx1 + cy0 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+                const c010 = grid[cx0 + cy1 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+                const c110 = grid[cx1 + cy1 * gridSizeX + cz0 * gridSizeX * gridSizeY];
+                const c001 = grid[cx0 + cy0 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+                const c101 = grid[cx1 + cy0 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+                const c011 = grid[cx0 + cy1 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+                const c111 = grid[cx1 + cy1 * gridSizeX + cz1 * gridSizeX * gridSizeY];
+
+                // Trilinear interpolation
+                const c00 = c000 * (1 - xd) + c100 * xd;
+                const c01 = c001 * (1 - xd) + c101 * xd;
+                const c10 = c010 * (1 - xd) + c110 * xd;
+                const c11 = c011 * (1 - xd) + c111 * xd;
+                const c0 = c00 * (1 - yd) + c10 * yd;
+                const c1 = c01 * (1 - yd) + c11 * yd;
+                return c0 * (1 - zd) + c1 * zd;
+            };
+
+            // Generate cave shell - optimized to ONLY iterate the shell band (skip hollow interior)
             for (let x = minX; x <= maxX; x++) {
-                for (let z = minZ; z <= maxZ; z++) {
-                    for (let y = minY; y <= maxY; y++) {
-                        const dx = x - centerX;
-                        const dy = y - centerY;
-                        const dz = z - centerZ;
+                const dx = x - centerX;
+                const dx2 = dx * dx;
 
-                        // Ellipsoid shape - wider than tall
-                        const distXZ = Math.sqrt(dx * dx + dz * dz);
-                        const distY = Math.abs(dy) * 1.3;
-                        const dist = Math.sqrt(distXZ * distXZ + distY * distY);
+                // Calculate z range for this x slice (ellipsoid intersection)
+                const maxZDist = Math.sqrt(Math.max(0, outerBound * outerBound - dx2));
+                const zStart = Math.max(0, Math.floor(centerZ - maxZDist));
+                const zEnd = Math.min(world.worldSize - 1, Math.ceil(centerZ + maxZDist));
 
-                        // Add noise for irregular shape
-                        const noise = this.caveGen.noise3D(x, y, z, 0.025, this.caveGen.seed) * 35;
-                        const wallNoise = this.caveGen.noise3D(x, y, z, 0.07, this.caveGen.seed + 1000) * 18;
+                for (let z = zStart; z <= zEnd; z++) {
+                    const dz = z - centerZ;
+                    const distXZ2 = dx2 + dz * dz;
 
-                        const effectiveRadius = radius + noise + wallNoise;
+                    // Skip if XZ distance exceeds outer bound
+                    if (distXZ2 > outerBound * outerBound) continue;
 
-                        // Check if in ceiling opening area
-                        let inOpening = false;
-                        if (y > centerY + radius * 0.3) { // Upper part of cave
-                            for (const opening of ceilingOpenings) {
-                                const openDist = Math.sqrt(
-                                    Math.pow(x - opening.x, 2) +
-                                    Math.pow(z - opening.z, 2)
-                                );
-                                if (openDist < opening.radius) {
-                                    // Fade out based on distance from edge and height
-                                    const edgeFactor = openDist / opening.radius;
-                                    const heightFactor = (y - (centerY + radius * 0.3)) / (radius * 0.4);
-                                    if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
-                                        inOpening = true;
-                                        break;
+                    // Calculate outer Y extent (where dist = outerBound)
+                    const outerDY = Math.sqrt(Math.max(0, outerBound * outerBound - distXZ2)) / 1.3;
+
+                    // Calculate inner Y extent (where dist = innerBound) - this is the hollow part to skip
+                    const innerDY = distXZ2 < innerBound * innerBound
+                        ? Math.sqrt(innerBound * innerBound - distXZ2) / 1.3
+                        : 0;
+
+                    // Process shell in two Y ranges: bottom shell and top shell (skip hollow middle)
+                    const yRanges = [];
+
+                    if (innerDY > 0) {
+                        // There's a hollow interior - create two separate ranges
+                        // Bottom shell: from -outerDY to -innerDY
+                        yRanges.push([
+                            Math.max(0, Math.floor(centerY - outerDY)),
+                            Math.min(world.worldSize - 1, Math.ceil(centerY - innerDY))
+                        ]);
+                        // Top shell: from +innerDY to +outerDY
+                        yRanges.push([
+                            Math.max(0, Math.floor(centerY + innerDY)),
+                            Math.min(world.worldSize - 1, Math.ceil(centerY + outerDY))
+                        ]);
+                    } else {
+                        // No hollow interior at this XZ (we're at the edge) - single range
+                        yRanges.push([
+                            Math.max(0, Math.floor(centerY - outerDY)),
+                            Math.min(world.worldSize - 1, Math.ceil(centerY + outerDY))
+                        ]);
+                    }
+
+                    // Process each Y range
+                    for (const [yStart, yEnd] of yRanges) {
+                        for (let y = yStart; y <= yEnd; y++) {
+                            const dy = y - centerY;
+                            const distY = Math.abs(dy) * 1.3;
+                            const dist = Math.sqrt(distXZ2 + distY * distY);
+
+                            // Safety check (should rarely trigger now)
+                            if (dist < innerBound || dist > outerBound) continue;
+
+                            // Sample pre-computed noise (fast interpolation instead of expensive trig)
+                            const noise = sampleNoise(noiseGrid1, x, y, z);
+                            const wallNoise = sampleNoise(noiseGrid2, x, y, z);
+                            const effectiveRadius = radius + noise + wallNoise;
+
+                            // Skip if outside effective radius
+                            if (dist >= effectiveRadius) continue;
+
+                            // Check if in ceiling opening area
+                            let inOpening = false;
+                            if (y > centerY + radius * 0.3) {
+                                for (const opening of ceilingOpenings) {
+                                    const openDist = Math.sqrt(
+                                        Math.pow(x - opening.x, 2) +
+                                        Math.pow(z - opening.z, 2)
+                                    );
+                                    if (openDist < opening.radius) {
+                                        const edgeFactor = openDist / opening.radius;
+                                        const heightFactor = (y - (centerY + radius * 0.3)) / (radius * 0.4);
+                                        if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
+                                            inOpening = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        if (dist < effectiveRadius && !inOpening) {
-                            // Shell thickness
-                            const shellThickness = 10 + this.caveGen.noise3D(x, y, z, 0.04, this.caveGen.seed + 2000) * 6;
+                            if (!inOpening) {
+                                // Shell thickness check (using pre-computed noise)
+                                const shellThickness = 10 + sampleNoise(noiseGrid3, x, y, z);
 
-                            if (dist > effectiveRadius - shellThickness) {
-                                // Place cave wall
-                                this.caveGen._placeRockVoxel(world, x, y, z, y < centerY);
+                                if (dist > effectiveRadius - shellThickness) {
+                                    // Place cave wall
+                                    this.caveGen._placeRockVoxel(world, x, y, z, y < centerY);
+                                }
                             }
                         }
                     }
