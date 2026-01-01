@@ -386,6 +386,13 @@
     </div>
 
     <script src="engine.js"></script>
-    <script src="game.js"></script>
+
+    <!-- Game modules (order matters - dependencies first) -->
+    <script src="game/config.js"></script>
+    <script src="game/cache.js"></script>
+    <script src="game/generators/island.js"></script>
+    <script src="game/generators/cave.js"></script>
+    <script src="game/player.js"></script>
+    <script src="game/game.js"></script>
 </body>
 </html>
