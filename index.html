@@ -1352,6 +1352,18 @@
             console.log(`Placing ship at seafloor height: ${seafloorHeight}`);
             await this.loadVoxelModel('assets/ship.json', shipX, shipY, shipZ, 1, shipTilt);
 
+            // Place lighthouse on the island, near the edge but before the beach
+            const lighthouseX = this.worldOffset + 70;   // East side of island
+            const lighthouseZ = this.worldOffset + 20;   // Slightly south
+            const lighthouseNoiseX = lighthouseX - this.worldOffset;
+            const lighthouseNoiseZ = lighthouseZ - this.worldOffset;
+            const lighthouseGroundHeight = this.terrain.getHeight(lighthouseNoiseX, lighthouseNoiseZ);
+            // Lighthouse model height is 48, add half (24) to place bottom on ground
+            const lighthouseY = lighthouseGroundHeight + 24;
+
+            console.log(`Placing lighthouse at ground height: ${lighthouseGroundHeight}`);
+            await this.loadVoxelModel('assets/lighthouse.json', lighthouseX, lighthouseY, lighthouseZ);
+
             const genTime = performance.now();
             progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
             await this._delay(50);
