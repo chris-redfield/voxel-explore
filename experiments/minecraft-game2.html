@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voxel World</title>
+    <title>Voxel World - Mega Edition (Full Preload)</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -20,7 +20,7 @@
         }
         #canvas-container.locked { cursor: none; }
         canvas { display: block; width: 100%; height: 100%; }
-        
+
         #ui {
             width: 260px;
             background: #16213e;
@@ -47,6 +47,7 @@
         .stat-value { color: #4ecca3; font-family: 'Consolas', monospace; }
         .stat-value.highlight { color: #ffd700; font-weight: bold; }
         .stat-value.flying { color: #00bfff; font-weight: bold; text-shadow: 0 0 8px #00bfff; }
+        .stat-value.mega { color: #ff6b6b; font-weight: bold; text-shadow: 0 0 8px #ff6b6b; }
         .info {
             background: #0f3460;
             padding: 10px;
@@ -64,7 +65,7 @@
             margin: 1px;
             font-size: 0.85em;
         }
-        
+
         #overlay {
             position: absolute;
             top: 50%;
@@ -82,7 +83,7 @@
             text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
         }
         #overlay p { color: #aaa; margin-top: 10px; }
-        
+
         .crosshair {
             position: absolute;
             top: 50%;
@@ -112,7 +113,7 @@
             top: 50%;
             transform: translateY(-50%);
         }
-        
+
         #loading {
             position: absolute;
             top: 50%;
@@ -142,12 +143,18 @@
             height: 100%;
             background: linear-gradient(90deg, #4ecca3, #ffd700);
             width: 0%;
-            transition: width 0.1s ease;
+            transition: width 0.05s ease;
         }
         #loading-text { color: #888; font-size: 0.9em; }
-        
+        #loading-stats {
+            color: #666;
+            font-size: 0.75em;
+            margin-top: 10px;
+            font-family: 'Consolas', monospace;
+        }
+
         .hidden { display: none !important; }
-        
+
         #respawn-message {
             position: absolute;
             top: 30%;
@@ -168,28 +175,29 @@
     <div id="container">
         <div id="canvas-container">
             <canvas id="canvas"></canvas>
-            
+
             <div id="loading">
-                <h2>🌍 Generating World...</h2>
+                <h2>🌍 Generating FULL MEGA World...</h2>
                 <div id="loading-progress">
                     <div id="loading-bar"></div>
                 </div>
                 <div id="loading-text">Initializing...</div>
+                <div id="loading-stats"></div>
             </div>
-            
+
             <div id="overlay" class="hidden">
                 <h2>Click to Play</h2>
                 <p>WASD to move, SPACE to jump, Mouse to look</p>
             </div>
-            
+
             <div class="crosshair"></div>
             <div id="respawn-message">Respawning...</div>
         </div>
-        
+
         <div id="ui">
             <h1>🎮 Voxel World</h1>
-            <div class="subtitle">Infinite Terrain with Incremental Loading</div>
-            
+            <div class="subtitle">MEGA Edition - Full Preload</div>
+
             <h2>👤 Player</h2>
             <div class="stat">
                 <span class="stat-label">Position</span>
@@ -207,10 +215,14 @@
                 <span class="stat-label">Flying</span>
                 <span class="stat-value" id="flying-status">No</span>
             </div>
-            
+
             <h2>🌍 World</h2>
             <div class="stat">
-                <span class="stat-label">Loaded Chunks</span>
+                <span class="stat-label">World Size</span>
+                <span class="stat-value mega" id="world-size">4096³</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Total Chunks</span>
                 <span class="stat-value highlight" id="chunk-count">0</span>
             </div>
             <div class="stat">
@@ -225,7 +237,11 @@
                 <span class="stat-label">Memory</span>
                 <span class="stat-value" id="memory-usage">0 MB</span>
             </div>
-            
+            <div class="stat">
+                <span class="stat-label">Load Time</span>
+                <span class="stat-value" id="load-time">-</span>
+            </div>
+
             <h2>📊 Performance</h2>
             <div class="stat">
                 <span class="stat-label">FPS</span>
@@ -235,11 +251,7 @@
                 <span class="stat-label">Frame Time</span>
                 <span class="stat-value" id="frame-time">0 ms</span>
             </div>
-            <div class="stat">
-                <span class="stat-label">Last Upload</span>
-                <span class="stat-value" id="upload-time">0 ms</span>
-            </div>
-            
+
             <div class="info">
                 <strong>Controls:</strong><br>
                 <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move<br>
@@ -251,78 +263,101 @@
             </div>
         </div>
     </div>
-    
-    <script src="engine.js"></script>
-    
+
+    <script src="../engine.js"></script>
+
     <script>
     // ============================================================
-    // Terrain Generator - Surface voxels only
+    // Terrain Generator - Surface voxels only (MEGA WORLD)
     // ============================================================
     class TerrainGenerator {
         constructor(seed = 12345) {
             this.seed = seed;
             this.baseHeight = 30;
-            this.hillHeight = 25;
-            this.scale = 0.012;
+            this.hillHeight = 35;
+            this.scale = 0.008;
         }
-        
+
         noise2D(x, z, scale, seed) {
             const nx = x * scale + seed;
             const nz = z * scale + seed * 1.5;
-            return (Math.sin(nx) * Math.cos(nz) + 
+            return (Math.sin(nx) * Math.cos(nz) +
                     Math.sin(nx * 2.1 + 0.5) * Math.cos(nz * 1.9 + 0.3) * 0.5 +
                     Math.sin(nx * 4.3 + 1.2) * Math.cos(nz * 3.7 + 0.7) * 0.25) / 1.75;
         }
-        
+
         getHeight(x, z) {
             const n1 = this.noise2D(x, z, this.scale, this.seed);
             const n2 = this.noise2D(x, z, this.scale * 2, this.seed + 1000) * 0.5;
             const n3 = this.noise2D(x, z, this.scale * 4, this.seed + 2000) * 0.25;
             let baseH = this.baseHeight + Math.floor(((n1 + n2 + n3) / 1.75 * 0.5 + 0.5) * this.hillHeight);
-            
-            // Add a big climbable mountain near spawn (centered at x=20, z=20)
-            const mountainCenterX = 20;
-            const mountainCenterZ = 20;
-            const mountainRadius = 45;  // How wide the mountain base is
-            const mountainHeight = 50;  // Peak height above base terrain
-            const slopeGentleness = 1.3; // Higher = gentler slope (climbable without jumping)
-            
-            const dx = x - mountainCenterX;
-            const dz = z - mountainCenterZ;
-            const dist = Math.sqrt(dx * dx + dz * dz);
-            
-            if (dist < mountainRadius) {
-                // Smooth cosine falloff for a natural mountain shape
-                const normalizedDist = dist / mountainRadius;
-                // Use a gentler curve: pow makes the top flatter, cos makes it smooth
-                const heightFactor = Math.pow(Math.cos(normalizedDist * Math.PI / 2), slopeGentleness);
-                
-                // Add some noise to make it look natural (rocky texture)
-                const rockNoise = this.noise2D(x, z, 0.15, this.seed + 5000) * 3;
-                
-                baseH += Math.floor(heightFactor * mountainHeight + rockNoise);
+
+            // Multiple mountains scattered across the mega world
+            // First mountain is at exact center (0,0), others spread throughout avoiding borders
+            const mountains = [
+                { x: 0, z: 0, radius: 70, height: 80 },           // Center mountain - player spawn
+                { x: 400, z: 300, radius: 80, height: 90 },       // Northeast
+                { x: -350, z: 450, radius: 50, height: 55 },      // Northwest
+                { x: 500, z: -400, radius: 70, height: 75 },      // Southeast
+                { x: -400, z: -350, radius: 45, height: 50 },     // Southwest
+                { x: 600, z: 600, radius: 100, height: 110 },     // Far northeast
+                { x: -550, z: -500, radius: 65, height: 65 },     // Far southwest
+                { x: -600, z: 200, radius: 55, height: 60 },      // West
+                { x: 250, z: -600, radius: 60, height: 70 },      // South
+            ];
+
+            for (const mountain of mountains) {
+                const dx = x - mountain.x;
+                const dz = z - mountain.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+
+                if (dist < mountain.radius) {
+                    const normalizedDist = dist / mountain.radius;
+                    const heightFactor = Math.pow(Math.cos(normalizedDist * Math.PI / 2), 1.3);
+                    const rockNoise = this.noise2D(x, z, 0.15, this.seed + 5000) * 3;
+                    baseH += Math.floor(heightFactor * mountain.height + rockNoise);
+                }
             }
-            
+
             return baseH;
         }
-        
+
         pseudoRandom(seed) {
             const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
             return x - Math.floor(x);
         }
-        
-        // Generate a single chunk (32x32)
+
+        isOnMountain(x, z) {
+            const mountains = [
+                { x: 0, z: 0, radius: 70 },
+                { x: 400, z: 300, radius: 80 },
+                { x: -350, z: 450, radius: 50 },
+                { x: 500, z: -400, radius: 70 },
+                { x: -400, z: -350, radius: 45 },
+                { x: 600, z: 600, radius: 100 },
+                { x: -550, z: -500, radius: 65 },
+                { x: -600, z: 200, radius: 55 },
+                { x: 250, z: -600, radius: 60 },
+            ];
+
+            for (const mountain of mountains) {
+                const dx = x - mountain.x;
+                const dz = z - mountain.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < mountain.radius) return true;
+            }
+            return false;
+        }
+
         generateChunk(world, chunkX, chunkZ, chunkSize, worldOffset) {
             const startX = worldOffset + chunkX * chunkSize;
             const startZ = worldOffset + chunkZ * chunkSize;
-            
-            // Check bounds
+
             if (startX < 0 || startX + chunkSize > world.worldSize ||
                 startZ < 0 || startZ + chunkSize > world.worldSize) {
                 return false;
             }
-            
-            // Pre-calculate heights
+
             const heights = new Int32Array(chunkSize * chunkSize);
             for (let lx = 0; lx < chunkSize; lx++) {
                 for (let lz = 0; lz < chunkSize; lz++) {
@@ -331,8 +366,7 @@
                     heights[lx + lz * chunkSize] = this.getHeight(noiseX, noiseZ);
                 }
             }
-            
-            // Generate surface voxels
+
             for (let lx = 0; lx < chunkSize; lx++) {
                 for (let lz = 0; lz < chunkSize; lz++) {
                     const h = heights[lx + lz * chunkSize];
@@ -340,42 +374,31 @@
                     const wz = startZ + lz;
                     const noiseX = chunkX * chunkSize + lx;
                     const noiseZ = chunkZ * chunkSize + lz;
-                    
-                    // Check if this is part of the mountain
-                    const mountainCenterX = 20;
-                    const mountainCenterZ = 20;
-                    const mountainRadius = 45;
-                    const dx = noiseX - mountainCenterX;
-                    const dz = noiseZ - mountainCenterZ;
-                    const distFromMountain = Math.sqrt(dx * dx + dz * dz);
-                    const isOnMountain = distFromMountain < mountainRadius;
-                    
-                    // Find minimum neighbor (check more neighbors for better coverage)
+
+                    const isOnMountain = this.isOnMountain(noiseX, noiseZ);
+
                     const getH = (dx, dz) => {
                         const nx = lx + dx, nz = lz + dz;
                         if (nx >= 0 && nx < chunkSize && nz >= 0 && nz < chunkSize)
                             return heights[nx + nz * chunkSize];
                         return this.getHeight(noiseX + dx, noiseZ + dz);
                     };
-                    
-                    // Check all 8 neighbors plus some extended range for steep slopes
+
                     const neighborHeights = [
                         getH(-1, 0), getH(1, 0), getH(0, -1), getH(0, 1),
                         getH(-1, -1), getH(-1, 1), getH(1, -1), getH(1, 1),
                         getH(-2, 0), getH(2, 0), getH(0, -2), getH(0, 2)
                     ];
                     const minH = Math.min(...neighborHeights);
-                    
-                    // Generate extra depth to prevent holes (at least 3 blocks deep, more on slopes)
+
                     const heightDiff = h - minH;
                     const extraDepth = Math.max(3, heightDiff + 2);
                     const startY = Math.max(0, h - extraDepth);
-                    
+
                     for (let y = startY; y < h; y++) {
                         let r, g, b;
-                        
-                        if (isOnMountain && y > 60) {
-                            // Snow at high altitudes
+
+                        if (isOnMountain && y > 80) {
                             if (y === h - 1) {
                                 const snow = 240 + (this.pseudoRandom(noiseX*1000+noiseZ+y) * 15)|0;
                                 r = snow; g = snow; b = snow + 5;
@@ -383,16 +406,13 @@
                                 const snow = 220 + (this.pseudoRandom(noiseX*1000+noiseZ+y) * 20)|0;
                                 r = snow; g = snow; b = snow + 10;
                             }
-                        } else if (isOnMountain && y > 45) {
-                            // Rocky mountain surface - gray/brown stone
+                        } else if (isOnMountain && y > 55) {
                             const rockVar = this.pseudoRandom(noiseX*1000+noiseZ+y);
                             if (rockVar > 0.6) {
-                                // Darker rock patches
                                 r = 85 + (this.pseudoRandom(noiseX+noiseZ+y) * 20)|0;
                                 g = 80 + (this.pseudoRandom(noiseX+noiseZ+y+1) * 15)|0;
                                 b = 75 + (this.pseudoRandom(noiseX+noiseZ+y+2) * 15)|0;
                             } else {
-                                // Lighter stone
                                 r = 120 + (this.pseudoRandom(noiseX+noiseZ+y) * 25)|0;
                                 g = 115 + (this.pseudoRandom(noiseX+noiseZ+y+1) * 20)|0;
                                 b = 105 + (this.pseudoRandom(noiseX+noiseZ+y+2) * 20)|0;
@@ -413,31 +433,29 @@
                     }
                 }
             }
-            
-            // Add trees (but not on high mountain slopes)
+
+            // Trees
             const treeSeed = this.seed + chunkX * 1000 + chunkZ;
-            const numTrees = 2 + Math.floor(this.pseudoRandom(treeSeed) * 3);
-            
+            const numTrees = 3 + Math.floor(this.pseudoRandom(treeSeed) * 4);
+
             for (let i = 0; i < numTrees; i++) {
                 const lx = Math.floor(this.pseudoRandom(treeSeed + i * 100) * (chunkSize - 8)) + 4;
                 const lz = Math.floor(this.pseudoRandom(treeSeed + i * 100 + 50) * (chunkSize - 8)) + 4;
                 const groundY = heights[lx + lz * chunkSize];
-                
-                if (groundY < 15 || groundY > 50) continue; // Skip very low areas and mountain peaks
-                
+
+                if (groundY < 15 || groundY > 60) continue;
+
                 const wx = startX + lx;
                 const wz = startZ + lz;
                 const treeH = 5 + Math.floor(this.pseudoRandom(treeSeed + i * 200) * 4);
-                
-                // Trunk
+
                 for (let y = groundY; y < groundY + treeH; y++) {
-                    world.setVoxel(wx, y, wz, 
+                    world.setVoxel(wx, y, wz,
                         93 + (this.pseudoRandom(i+y)*10)|0,
                         64 + (this.pseudoRandom(i+y+1)*10)|0,
                         45 + (this.pseudoRandom(i+y+2)*10)|0);
                 }
-                
-                // Leaves
+
                 const leafY = groundY + treeH - 2;
                 for (let dy = 0; dy <= 3; dy++) {
                     const r = dy < 2 ? 2 : 1;
@@ -453,12 +471,12 @@
                     }
                 }
             }
-            
-            // Add flowers
+
+            // Flowers
             const flowerSeed = treeSeed + 5000;
             const flowers = [[255,50,50], [255,255,50], [255,150,200], [150,150,255], [255,165,0]];
-            const numFlowers = 5 + Math.floor(this.pseudoRandom(flowerSeed) * 10);
-            
+            const numFlowers = 6 + Math.floor(this.pseudoRandom(flowerSeed) * 12);
+
             for (let i = 0; i < numFlowers; i++) {
                 const lx = Math.floor(this.pseudoRandom(flowerSeed + i * 100) * chunkSize);
                 const lz = Math.floor(this.pseudoRandom(flowerSeed + i * 100 + 50) * chunkSize);
@@ -466,11 +484,11 @@
                 const c = flowers[Math.floor(this.pseudoRandom(flowerSeed + i) * flowers.length)];
                 world.setVoxel(startX + lx, h, startZ + lz, c[0], c[1], c[2]);
             }
-            
+
             return true;
         }
     }
-    
+
     // ============================================================
     // Player with physics
     // ============================================================
@@ -482,35 +500,33 @@
             this.width = 0.6; this.height = 1.8; this.eyeHeight = 1.6;
             this.onGround = false;
             this.walkSpeed = 6; this.sprintSpeed = 10;
-            this.flySpeed = 20;  // 2x sprint speed
+            this.flySpeed = 40;  // Even faster for full world exploration
             this.jumpForce = 8; this.gravity = 25;
             this.spawnX = 0; this.spawnY = 50; this.spawnZ = 0;
             this.flying = false;
         }
-        
+
         setSpawn(x, y, z) { this.spawnX = x; this.spawnY = y; this.spawnZ = z; }
         respawn() { this.x = this.spawnX; this.y = this.spawnY; this.z = this.spawnZ; this.vx = this.vy = this.vz = 0; this.flying = false; }
         getEyePos() { return [this.x, this.y + this.eyeHeight, this.z]; }
         getForward() { return [Math.sin(this.yaw), Math.cos(this.yaw)]; }
         getRight() { return [Math.cos(this.yaw), -Math.sin(this.yaw)]; }
-        
+
         toggleFlight() {
             this.flying = !this.flying;
-            if (this.flying) {
-                this.vy = 0;  // Stop any vertical momentum when starting flight
-            }
+            if (this.flying) this.vy = 0;
         }
-        
+
         rotate(dy, dp) {
             this.yaw += dy;
             this.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, this.pitch - dp));
         }
-        
+
         jump() { if (this.onGround && !this.flying) { this.vy = this.jumpForce; this.onGround = false; } }
     }
-    
+
     // ============================================================
-    // Main Game
+    // Main Game - FULL WORLD PRELOAD
     // ============================================================
     class VoxelGame {
         constructor(canvasId) {
@@ -518,28 +534,25 @@
             this.engine = new VoxelEngine(this.canvas);
             this.player = new Player();
             this.terrain = new TerrainGenerator(Math.floor(Math.random() * 100000));
-            
+
             this.chunkSize = 32;
-            this.renderDistance = 5;          // Runtime dynamic loading
-            this.initialRenderDistance = 12;  // Pre-render on load (larger for mountain view)
             this.loadedChunks = new Set();
-            this.attemptedChunks = new Set();  // Prevents re-trying failed chunks
             this.worldOffset = 0;
-            
+            this.loadTime = 0;
+
             this.keys = {};
             this.isLocked = false;
             this.mouseDelta = { x: 0, y: 0 };
             this.fps = 0;
             this.frameCount = 0;
             this.lastFpsTime = performance.now();
-            this.lastUploadTime = 0;
-            
+
             this._setupInput();
         }
-        
+
         _setupInput() {
             window.addEventListener('keydown', e => {
-                if (this.keys[e.code]) return;  // Prevent repeat triggers
+                if (this.keys[e.code]) return;
                 this.keys[e.code] = true;
                 if (e.code === 'Space') { e.preventDefault(); this.player.jump(); }
                 if (e.code === 'KeyF') { this.player.toggleFlight(); }
@@ -554,10 +567,8 @@
                 document.getElementById('overlay').classList.toggle('hidden', this.isLocked);
                 document.querySelector('.crosshair').classList.toggle('visible', this.isLocked);
                 this.canvas.parentElement.classList.toggle('locked', this.isLocked);
-                // Clear all keys when pointer lock is lost to prevent stuck keys
                 if (!this.isLocked) this.keys = {};
             });
-            // Also clear keys when window loses focus (alt-tab, etc)
             window.addEventListener('blur', () => this.keys = {});
             document.addEventListener('mousemove', e => {
                 if (this.isLocked) {
@@ -567,82 +578,123 @@
             });
             window.addEventListener('resize', () => this._resize());
         }
-        
+
         async init() {
             const loadingBar = document.getElementById('loading-bar');
             const loadingText = document.getElementById('loading-text');
-            
-            const progress = (p, text) => {
+            const loadingStats = document.getElementById('loading-stats');
+
+            const startTime = performance.now();
+
+            const progress = (p, text, stats = '') => {
                 loadingBar.style.width = (p * 100) + '%';
                 loadingText.textContent = text;
+                loadingStats.textContent = stats;
             };
-            
-            progress(0, 'Creating world...');
+
+            progress(0, 'Creating MEGA world...', '');
             await this._delay(50);
-            
-            // Create world: 256 coarse = 2048³ world
-            this.engine.createWorld(256, 8);
+
+            // Create MEGA world: 512 coarse = 4096³ world
+            this.engine.createWorld(512, 8);
             this.worldOffset = Math.floor(this.engine.world.worldSize / 2);
-            
-            progress(0.05, 'Generating initial chunks...');
+
+            document.getElementById('world-size').textContent =
+                this.engine.world.worldSize + '³';
+
+            progress(0.02, 'Calculating chunk range...', '');
             await this._delay(50);
-            
-            // Generate initial chunks centered around mountain spawn point
-            // Mountain center is at noise coords (20, 20), which is chunk (0, 0)
-            const spawnChunkX = Math.floor(20 / this.chunkSize);
-            const spawnChunkZ = Math.floor(20 / this.chunkSize);
-            const totalChunks = (this.initialRenderDistance * 2 + 1) ** 2;
+
+            // Calculate full chunk range
+            // World goes from 0 to worldSize, offset is worldSize/2
+            // In noise coordinates, we want to cover the entire world
+            const chunksPerSide = Math.floor(this.engine.world.worldSize / this.chunkSize);
+            const minChunk = -Math.floor(chunksPerSide / 2);
+            const maxChunk = Math.floor(chunksPerSide / 2) - 1;
+
+            const totalChunks = chunksPerSide * chunksPerSide;
             let generated = 0;
-            
-            for (let cx = spawnChunkX - this.initialRenderDistance; cx <= spawnChunkX + this.initialRenderDistance; cx++) {
-                for (let cz = spawnChunkZ - this.initialRenderDistance; cz <= spawnChunkZ + this.initialRenderDistance; cz++) {
+            let lastUpdate = performance.now();
+
+            progress(0.03, `Generating ${totalChunks.toLocaleString()} chunks...`, `${chunksPerSide}x${chunksPerSide} grid`);
+            await this._delay(50);
+
+            // Generate ALL chunks
+            for (let cx = minChunk; cx <= maxChunk; cx++) {
+                for (let cz = minChunk; cz <= maxChunk; cz++) {
                     const key = `${cx},${cz}`;
-                    this.attemptedChunks.add(key);
-                    
+
                     if (this.terrain.generateChunk(this.engine.world, cx, cz, this.chunkSize, this.worldOffset)) {
                         this.loadedChunks.add(key);
                     }
                     generated++;
-                    progress(0.05 + (generated / totalChunks) * 0.8, `Chunk ${generated}/${totalChunks}`);
+
+                    // Update progress every 100ms to keep UI responsive
+                    const now = performance.now();
+                    if (now - lastUpdate > 100) {
+                        const p = 0.03 + (generated / totalChunks) * 0.85;
+                        const elapsed = ((now - startTime) / 1000).toFixed(1);
+                        const chunksPerSec = Math.floor(generated / (now - startTime) * 1000);
+                        const eta = ((totalChunks - generated) / chunksPerSec).toFixed(0);
+                        progress(p,
+                            `Chunk ${generated.toLocaleString()}/${totalChunks.toLocaleString()}`,
+                            `${elapsed}s elapsed | ${chunksPerSec} chunks/s | ETA: ${eta}s`
+                        );
+                        lastUpdate = now;
+                        await this._delay(1);
+                    }
                 }
-                await this._delay(1);  // Let UI update
             }
-            
-            progress(0.9, 'Uploading to GPU...');
+
+            const genTime = performance.now();
+            progress(0.90, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
             await this._delay(50);
-            
-            // Full upload for initial world
+
+            // Full upload
             this.engine.uploadWorld();
-            
-            progress(0.98, 'Finding spawn...');
+
+            const uploadTime = performance.now();
+            progress(0.98, 'Finding spawn...', `Upload: ${((uploadTime - genTime)/1000).toFixed(1)}s`);
             await this._delay(50);
-            
-            // Spawn at the top of the mountain (mountain center is at noise coords 20, 20)
-            const mountainCenterX = 20;
-            const mountainCenterZ = 20;
+
+            // Spawn on center mountain (0, 0 in noise coords = exact world center)
+            const mountainCenterX = 0;
+            const mountainCenterZ = 0;
             const spawnY = this.terrain.getHeight(mountainCenterX, mountainCenterZ) + 2;
             this.player.x = this.worldOffset + mountainCenterX + 0.5;
             this.player.y = spawnY;
             this.player.z = this.worldOffset + mountainCenterZ + 0.5;
             this.player.setSpawn(this.player.x, this.player.y, this.player.z);
-            
-            progress(1, 'Ready!');
-            await this._delay(300);
-            
+
+            this.loadTime = (performance.now() - startTime) / 1000;
+
+            progress(1, 'Ready!', `Total: ${this.loadTime.toFixed(1)}s`);
+            await this._delay(500);
+
             document.getElementById('loading').classList.add('hidden');
             document.getElementById('overlay').classList.remove('hidden');
-            
+            document.getElementById('load-time').textContent = this.loadTime.toFixed(1) + 's';
+
             this.engine.settings.enableShadows = true;
+            this.engine.settings.fogDensity = 0.8;  // Even less fog for full world view
             this.engine.camera.fov = 70;
             this._resize();
+
+            console.log('=== FULL WORLD LOADED ===');
+            console.log(`World size: ${this.engine.world.worldSize}³`);
+            console.log(`Chunks: ${this.loadedChunks.size.toLocaleString()}`);
+            console.log(`Voxels: ${this.engine.getVoxelCount().toLocaleString()}`);
+            console.log(`Bricks: ${this.engine.getBrickCount().toLocaleString()}`);
+            console.log(`Memory: ${this.engine.getMemoryUsage().totalMB.toFixed(2)} MB`);
+            console.log(`Load time: ${this.loadTime.toFixed(1)}s`);
         }
-        
+
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
         _resize() {
             const c = this.canvas.parentElement;
             this.engine.resize(c.clientWidth, c.clientHeight);
         }
-        
+
         _checkCollision(x, y, z) {
             const hw = this.player.width / 2;
             const points = [
@@ -656,7 +708,7 @@
             }
             return false;
         }
-        
+
         _isOnGround() {
             const hw = this.player.width / 2;
             const y = this.player.y - 0.1;
@@ -673,57 +725,50 @@
             }
             return false;
         }
-        
+
         _updatePlayer(dt) {
-            // Respawn check (only if not flying)
             if (this.player.y < -20 && !this.player.flying) {
                 document.getElementById('respawn-message').classList.add('visible');
                 setTimeout(() => document.getElementById('respawn-message').classList.remove('visible'), 1500);
                 this.player.respawn();
                 return;
             }
-            
-            // Mouse look
+
             this.player.rotate(this.mouseDelta.x * 0.002, this.mouseDelta.y * 0.002);
             this.mouseDelta.x = this.mouseDelta.y = 0;
-            
-            // Movement
+
             const [fx, fz] = this.player.getForward();
             const [rx, rz] = this.player.getRight();
             let mx = 0, mz = 0, my = 0;
-            
+
             if (this.keys['KeyW']) { mx += fx; mz += fz; }
             if (this.keys['KeyS']) { mx -= fx; mz -= fz; }
             if (this.keys['KeyA']) { mx -= rx; mz -= rz; }
             if (this.keys['KeyD']) { mx += rx; mz += rz; }
-            
+
             const len = Math.sqrt(mx*mx + mz*mz);
             if (len > 0) { mx /= len; mz /= len; }
-            
+
             if (this.player.flying) {
-                // Flight mode: no gravity, Space goes up, Ctrl/Shift goes down, fast speed
                 const speed = this.player.flySpeed;
                 this.player.vx = mx * speed;
                 this.player.vz = mz * speed;
-                
-                // Vertical flight controls
+
                 if (this.keys['Space']) { my = 1; }
                 if (this.keys['ControlLeft'] || this.keys['ShiftLeft']) { my = -1; }
                 this.player.vy = my * speed;
             } else {
-                // Normal mode with gravity
                 const speed = this.keys['ShiftLeft'] ? this.player.sprintSpeed : this.player.walkSpeed;
                 this.player.vx = mx * speed;
                 this.player.vz = mz * speed;
                 this.player.vy -= this.player.gravity * dt;
                 this.player.vy = Math.max(this.player.vy, -50);
             }
-            
-            // Move with collision
+
             const newX = this.player.x + this.player.vx * dt;
             const newY = this.player.y + this.player.vy * dt;
             const newZ = this.player.z + this.player.vz * dt;
-            
+
             if (!this._checkCollision(newX, this.player.y, this.player.z)) {
                 this.player.x = newX;
             }
@@ -736,46 +781,15 @@
                 if (this.player.vy < 0) this.player.onGround = true;
                 this.player.vy = 0;
             }
-            
+
             this.player.onGround = this._isOnGround();
-            
-            // Update camera
+
             const [ex, ey, ez] = this.player.getEyePos();
             this.engine.camera.setPosition(ex, ey, ez);
             this.engine.camera.yaw = this.player.yaw;
             this.engine.camera.pitch = this.player.pitch;
         }
-        
-        _updateChunks() {
-            const playerChunkX = Math.floor((this.player.x - this.worldOffset) / this.chunkSize);
-            const playerChunkZ = Math.floor((this.player.z - this.worldOffset) / this.chunkSize);
-            
-            let newChunks = 0;
-            
-            // Generate chunks in render distance
-            for (let cx = playerChunkX - this.renderDistance; cx <= playerChunkX + this.renderDistance; cx++) {
-                for (let cz = playerChunkZ - this.renderDistance; cz <= playerChunkZ + this.renderDistance; cz++) {
-                    const key = `${cx},${cz}`;
-                    
-                    if (this.attemptedChunks.has(key)) continue;
-                    this.attemptedChunks.add(key);
-                    
-                    if (this.terrain.generateChunk(this.engine.world, cx, cz, this.chunkSize, this.worldOffset)) {
-                        this.loadedChunks.add(key);
-                        newChunks++;
-                    }
-                }
-            }
-            
-            // Incremental upload - only dirty bricks!
-            if (newChunks > 0) {
-                const start = performance.now();
-                const uploaded = this.engine.uploadDirtyBricks();
-                this.lastUploadTime = performance.now() - start;
-                console.log(`Uploaded ${uploaded} bricks in ${this.lastUploadTime.toFixed(1)}ms`);
-            }
-        }
-        
+
         _updateStats() {
             this.frameCount++;
             const now = performance.now();
@@ -784,45 +798,44 @@
                 this.frameCount = 0;
                 this.lastFpsTime = now;
             }
-            
+
             const pcx = Math.floor((this.player.x - this.worldOffset) / this.chunkSize);
             const pcz = Math.floor((this.player.z - this.worldOffset) / this.chunkSize);
-            
+
             document.getElementById('fps').textContent = this.fps;
             document.getElementById('frame-time').textContent = (1000 / Math.max(1, this.fps)).toFixed(1) + ' ms';
-            document.getElementById('upload-time').textContent = this.lastUploadTime.toFixed(1) + ' ms';
-            document.getElementById('player-pos').textContent = 
+            document.getElementById('player-pos').textContent =
                 `(${this.player.x.toFixed(0)}, ${this.player.y.toFixed(0)}, ${this.player.z.toFixed(0)})`;
             document.getElementById('player-chunk').textContent = `(${pcx}, ${pcz})`;
             document.getElementById('on-ground').textContent = this.player.onGround ? 'Yes' : 'No';
             document.getElementById('flying-status').textContent = this.player.flying ? '✈️ Yes' : 'No';
             document.getElementById('flying-status').classList.toggle('flying', this.player.flying);
-            document.getElementById('chunk-count').textContent = this.loadedChunks.size;
+            document.getElementById('chunk-count').textContent = this.loadedChunks.size.toLocaleString();
             document.getElementById('voxel-count').textContent = this.engine.getVoxelCount().toLocaleString();
             document.getElementById('brick-count').textContent = this.engine.getBrickCount().toLocaleString();
             document.getElementById('memory-usage').textContent = this.engine.getMemoryUsage().totalMB.toFixed(2) + ' MB';
         }
-        
+
         run() {
             let lastTime = performance.now();
-            
+
             const loop = () => {
                 const now = performance.now();
                 const dt = Math.min((now - lastTime) / 1000, 0.1);
                 lastTime = now;
-                
+
                 this._updatePlayer(dt);
-                this._updateChunks();
+                // No dynamic chunk loading - everything is preloaded!
                 this.engine.render();
                 this._updateStats();
-                
+
                 requestAnimationFrame(loop);
             };
-            
+
             loop();
         }
     }
-    
+
     // ============================================================
     // Start
     // ============================================================
