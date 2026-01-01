@@ -1332,6 +1332,18 @@
 
             console.log(`Cave system generated: ${caveCenters.length} connected caves`);
 
+            // Load and place the pirate ship near the island
+            progress(0.87, 'Loading pirate ship...', '');
+            await this._delay(10);
+
+            // Place ship underwater, north-east of island (away from caves)
+            // Caves are mostly south/west, so north-east is clear
+            const shipX = this.worldOffset + 150;  // Northeast of island
+            const shipY = SEA_LEVEL - 70;          // Underwater (sunken ship!)
+            const shipZ = this.worldOffset - 150;  // North
+
+            await this.loadVoxelModel('assets/ship.json', shipX, shipY, shipZ);
+
             const genTime = performance.now();
             progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
             await this._delay(50);
@@ -1402,6 +1414,43 @@
         }
 
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        // Load a voxel model from JSON and place it in the world
+        async loadVoxelModel(jsonPath, offsetX, offsetY, offsetZ, scale = 1) {
+            console.log(`Loading voxel model: ${jsonPath}`);
+
+            try {
+                const response = await fetch(jsonPath);
+                if (!response.ok) throw new Error(`Failed to load ${jsonPath}`);
+
+                const data = await response.json();
+                const voxels = data.voxels;
+                const world = this.engine.world;
+
+                console.log(`  Placing ${voxels.length} voxels at (${offsetX}, ${offsetY}, ${offsetZ})`);
+
+                let placed = 0;
+                for (const v of voxels) {
+                    const wx = Math.floor(offsetX + v.x * scale);
+                    const wy = Math.floor(offsetY + v.y * scale);
+                    const wz = Math.floor(offsetZ + v.z * scale);
+
+                    // Check bounds
+                    if (wx >= 0 && wx < world.worldSize &&
+                        wy >= 0 && wy < world.worldSize &&
+                        wz >= 0 && wz < world.worldSize) {
+                        world.setVoxel(wx, wy, wz, v.r, v.g, v.b);
+                        placed++;
+                    }
+                }
+
+                console.log(`  Placed ${placed} voxels`);
+                return { placed, gridSize: data.gridSize };
+            } catch (e) {
+                console.error(`Failed to load voxel model: ${e}`);
+                return null;
+            }
+        }
 
         // Generate a cave template (voxels stored relative to center)
         async _generateCaveTemplate(seed, radius, progress) {
