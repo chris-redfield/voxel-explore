@@ -1336,13 +1336,21 @@
             progress(0.87, 'Loading pirate ship...', '');
             await this._delay(10);
 
-            // Place ship underwater, north-east of island (away from caves)
-            // Caves are mostly south/west, so north-east is clear
-            const shipX = this.worldOffset + 150;  // Northeast of island
-            const shipY = SEA_LEVEL - 70;          // Underwater (sunken ship!)
-            const shipZ = this.worldOffset - 150;  // North
+            // Place ship on the ACTUAL seafloor, north of island (away from caves)
+            const shipX = this.worldOffset + 180;  // East of island
+            const shipZ = this.worldOffset - 280;  // Far north (away from caves)
 
-            await this.loadVoxelModel('assets/ship.json', shipX, shipY, shipZ);
+            // Get the actual terrain height at this position so ship sits ON the bottom
+            const shipNoiseX = shipX - this.worldOffset;
+            const shipNoiseZ = shipZ - this.worldOffset;
+            const seafloorHeight = this.terrain.getHeight(shipNoiseX, shipNoiseZ);
+            // Ship model is centered, so add half its height (83/2 ≈ 42) to lift it up
+            // so the hull bottom rests on the ground, not buried
+            const shipY = seafloorHeight + 42;    // Lift so bottom touches ground
+            const shipTilt = 0;                    // No tilt for now
+
+            console.log(`Placing ship at seafloor height: ${seafloorHeight}`);
+            await this.loadVoxelModel('assets/ship.json', shipX, shipY, shipZ, 1, shipTilt);
 
             const genTime = performance.now();
             progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
@@ -1416,7 +1424,8 @@
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
         // Load a voxel model from JSON and place it in the world
-        async loadVoxelModel(jsonPath, offsetX, offsetY, offsetZ, scale = 1) {
+        // tiltAngle: rotation in degrees around the Z axis (roll/tilt left-right)
+        async loadVoxelModel(jsonPath, offsetX, offsetY, offsetZ, scale = 1, tiltAngle = 0) {
             console.log(`Loading voxel model: ${jsonPath}`);
 
             try {
@@ -1426,14 +1435,39 @@
                 const data = await response.json();
                 const voxels = data.voxels;
                 const world = this.engine.world;
+                const gridSize = data.gridSize;
 
-                console.log(`  Placing ${voxels.length} voxels at (${offsetX}, ${offsetY}, ${offsetZ})`);
+                // Calculate center of model for rotation
+                const centerX = gridSize.x / 2;
+                const centerY = gridSize.y / 2;
+                const centerZ = gridSize.z / 2;
+
+                // Convert tilt angle to radians
+                const tiltRad = tiltAngle * Math.PI / 180;
+                const cosT = Math.cos(tiltRad);
+                const sinT = Math.sin(tiltRad);
+
+                console.log(`  Placing ${voxels.length} voxels at (${offsetX}, ${offsetY}, ${offsetZ}), tilt: ${tiltAngle}°`);
 
                 let placed = 0;
                 for (const v of voxels) {
-                    const wx = Math.floor(offsetX + v.x * scale);
-                    const wy = Math.floor(offsetY + v.y * scale);
-                    const wz = Math.floor(offsetZ + v.z * scale);
+                    // Center the coordinates
+                    let lx = v.x - centerX;
+                    let ly = v.y - centerY;
+                    let lz = v.z - centerZ;
+
+                    // Apply tilt rotation around Z axis (roll)
+                    if (tiltAngle !== 0) {
+                        const newLx = lx * cosT - ly * sinT;
+                        const newLy = lx * sinT + ly * cosT;
+                        lx = newLx;
+                        ly = newLy;
+                    }
+
+                    // Apply scale and offset
+                    const wx = Math.floor(offsetX + lx * scale);
+                    const wy = Math.floor(offsetY + ly * scale);
+                    const wz = Math.floor(offsetZ + lz * scale);
 
                     // Check bounds
                     if (wx >= 0 && wx < world.worldSize &&
