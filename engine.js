@@ -540,8 +540,8 @@ void main() {
 
     // Water surface lens effect - apply when ray passed through water
     if (hit.passedThroughWater) {
-        // Water tint color (slightly cyan/blue)
-        vec3 waterTint = vec3(0.2, 0.5, 0.7);
+        // Water tint color (slightly cyan/blue) - darkened 30%
+        vec3 waterTint = vec3(0.14, 0.35, 0.49);
 
         // Fresnel-like effect: more tint when looking at shallow angles
         float viewAngle = abs(rayDir.y);  // 1.0 = looking straight down, 0.0 = horizontal
@@ -578,6 +578,9 @@ void main() {
             caustic = caustic * 0.1 + 0.95;  // Range: 0.95 to 1.05
             color *= caustic;
         }
+
+        // Add 20% surface opacity to make water slightly visible as a surface
+        color = mix(color, waterTint, 0.20);
     }
 
     fragColor = vec4(color, 1.0);
