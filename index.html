@@ -1364,6 +1364,10 @@
             console.log(`Placing lighthouse at ground height: ${lighthouseGroundHeight}`);
             await this.loadVoxelModel('assets/lighthouse.json', lighthouseX, lighthouseY, lighthouseZ);
 
+            // Add spiral stairs around the lighthouse (same position, stairs wrap around it)
+            // Stairs grid is 11x48x11, centered at same position as lighthouse
+            await this.loadVoxelModel('assets/lighthouse_stairs.json', lighthouseX, lighthouseY, lighthouseZ);
+
             const genTime = performance.now();
             progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
             await this._delay(50);
