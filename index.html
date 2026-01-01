@@ -389,6 +389,81 @@
 
     <script>
     // ============================================================
+    // IndexedDB Cave Cache
+    // ============================================================
+    const CaveCache = {
+        DB_NAME: 'SeaCavesCache',
+        DB_VERSION: 1,
+        STORE_NAME: 'caveTemplates',
+        NUM_CAVES: 5,
+
+        async open() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve(request.result);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(this.STORE_NAME)) {
+                        db.createObjectStore(this.STORE_NAME, { keyPath: 'id' });
+                    }
+                };
+            });
+        },
+
+        async getCaveCount() {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(this.STORE_NAME, 'readonly');
+                const store = tx.objectStore(this.STORE_NAME);
+                const request = store.count();
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        },
+
+        async saveCave(id, voxels) {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(this.STORE_NAME, 'readwrite');
+                const store = tx.objectStore(this.STORE_NAME);
+                const request = store.put({ id, voxels });
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+            });
+        },
+
+        async getCave(id) {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(this.STORE_NAME, 'readonly');
+                const store = tx.objectStore(this.STORE_NAME);
+                const request = store.get(id);
+                request.onsuccess = () => resolve(request.result?.voxels || null);
+                request.onerror = () => reject(request.error);
+            });
+        },
+
+        async getRandomCave() {
+            const count = await this.getCaveCount();
+            if (count === 0) return null;
+            const id = Math.floor(Math.random() * count);
+            return this.getCave(id);
+        },
+
+        async clearAll() {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(this.STORE_NAME, 'readwrite');
+                const store = tx.objectStore(this.STORE_NAME);
+                const request = store.clear();
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+            });
+        }
+    };
+
+    // ============================================================
     // Constants
     // ============================================================
     const SEA_LEVEL = 300;  // Y coordinate of sea surface - HIGH to allow HUGE deep caves
@@ -396,7 +471,7 @@
     const ISLAND_RADIUS = 120;  // Radius of the island
 
     // Cave system configuration
-    const CAVE_SIZE = 2;  // Number of connected cave spheres (1 = single cave, 2+ = worm structure)
+    const CAVE_SIZE = 4;  // Number of connected cave spheres (1 = single cave, 2+ = worm structure)
     const CAVE_RADIUS = 180;  // Radius of each cave sphere
     const CAVE_OVERLAP = 0.25;  // How much caves overlap (0 = just touching, 0.25 = nice tunnel connection)
 
@@ -1158,6 +1233,12 @@
                 loadingStats.textContent = stats;
             };
 
+            // Check if we need to generate cave templates (first-time setup)
+            const cachedCount = await CaveCache.getCaveCount();
+            if (cachedCount < CaveCache.NUM_CAVES) {
+                await this._firstTimeSetup(progress, cachedCount);
+            }
+
             progress(0, 'Creating ocean world...', '');
             await this._delay(50);
 
@@ -1187,36 +1268,34 @@
             });
             console.timeEnd('TERRAIN');
 
-            // Generate underwater cave system - worm-like structure of connected spheres
-            progress(0.48, 'Creating underwater caves...', '');
+            // Load cave from cache and apply to world
+            progress(0.48, 'Loading cave from cache...', '');
             await this._delay(50);
 
             // Calculate cave centers for worm structure
-            // Caves are arranged in an arc around the island
             const caveCenters = this._calculateCaveCenters();
-
-            // Store all centers for formation generation later
             this.caveCenters = caveCenters;
 
-            // Generate each cave sphere
-            console.time('CAVES_TOTAL');
-            for (let i = 0; i < caveCenters.length; i++) {
-                const cave = caveCenters[i];
-                const progressStart = 0.48 + (i / caveCenters.length) * 0.32;
+            // Load random cave template from cache
+            console.time('CAVES_FROM_CACHE');
+            const caveTemplate = await CaveCache.getRandomCave();
 
-                progress(progressStart, `Creating cave ${i + 1}/${caveCenters.length}...`, '');
+            if (caveTemplate) {
+                progress(0.55, 'Applying cave template...', `${caveTemplate.length.toLocaleString()} voxels`);
                 await this._delay(10);
 
-                console.time(`CAVE_${i + 1}_SHELL`);
-                await this._generateCaveWithProgress(
-                    cave.x, cave.y, cave.z, CAVE_RADIUS,
-                    progress, progressStart, progressStart + (0.32 / caveCenters.length)
-                );
-                console.timeEnd(`CAVE_${i + 1}_SHELL`);
-
-                console.log(`Cave ${i + 1} generated at (${cave.x}, ${cave.y}, ${cave.z})`);
+                // Apply the same template to each cave position
+                for (let i = 0; i < caveCenters.length; i++) {
+                    const cave = caveCenters[i];
+                    console.time(`APPLY_CAVE_${i + 1}`);
+                    this._applyCaveTemplate(caveTemplate, cave.x, cave.y, cave.z);
+                    console.timeEnd(`APPLY_CAVE_${i + 1}`);
+                    console.log(`Cave ${i + 1} applied at (${cave.x}, ${cave.y}, ${cave.z})`);
+                }
+            } else {
+                console.warn('No cached caves found!');
             }
-            console.timeEnd('CAVES_TOTAL');
+            console.timeEnd('CAVES_FROM_CACHE');
 
             // Carve connecting tunnels between adjacent caves
             if (caveCenters.length > 1) {
@@ -1317,6 +1396,229 @@
         }
 
         _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        // Generate a cave template (voxels stored relative to center)
+        async _generateCaveTemplate(seed, radius, progress) {
+            const voxels = [];
+            const caveGen = new CaveGenerator(seed);
+
+            const maxNoise = 55;
+            const maxShellThickness = 18;
+            const outerBound = radius + maxNoise;
+            const innerBound = Math.max(0, radius - maxNoise - maxShellThickness);
+
+            // Bounds relative to center (0, 0, 0)
+            const minX = -Math.ceil(outerBound);
+            const maxX = Math.ceil(outerBound);
+
+            // Ceiling openings
+            const ceilingOpenings = [];
+            const numOpenings = 8 + Math.floor(caveGen.pseudoRandom(seed + 5000) * 10);
+            for (let i = 0; i < numOpenings; i++) {
+                const angle = caveGen.pseudoRandom(seed + i * 100) * Math.PI * 2;
+                const dist = caveGen.pseudoRandom(seed + i * 100 + 50) * radius * 0.6;
+                const openingRadius = 10 + caveGen.pseudoRandom(seed + i * 200) * 20;
+                ceilingOpenings.push({
+                    x: Math.cos(angle) * dist,
+                    z: Math.sin(angle) * dist,
+                    radius: openingRadius
+                });
+            }
+
+            // Pre-compute sparse noise grid
+            const NOISE_STEP = 8;
+            const gridMin = Math.floor(-outerBound / NOISE_STEP) - 1;
+            const gridMax = Math.ceil(outerBound / NOISE_STEP) + 1;
+            const gridSize = gridMax - gridMin + 1;
+
+            const noiseGrid1 = new Float32Array(gridSize * gridSize * gridSize);
+            const noiseGrid2 = new Float32Array(gridSize * gridSize * gridSize);
+            const noiseGrid3 = new Float32Array(gridSize * gridSize * gridSize);
+
+            for (let gx = 0; gx < gridSize; gx++) {
+                for (let gy = 0; gy < gridSize; gy++) {
+                    for (let gz = 0; gz < gridSize; gz++) {
+                        const wx = (gridMin + gx) * NOISE_STEP;
+                        const wy = (gridMin + gy) * NOISE_STEP;
+                        const wz = (gridMin + gz) * NOISE_STEP;
+                        const idx = gx + gy * gridSize + gz * gridSize * gridSize;
+                        noiseGrid1[idx] = caveGen.noise3D(wx, wy, wz, 0.025, seed) * 35;
+                        noiseGrid2[idx] = caveGen.noise3D(wx, wy, wz, 0.07, seed + 1000) * 18;
+                        noiseGrid3[idx] = caveGen.noise3D(wx, wy, wz, 0.04, seed + 2000) * 6;
+                    }
+                }
+            }
+
+            const sampleNoise = (grid, x, y, z) => {
+                const fx = x / NOISE_STEP - gridMin;
+                const fy = y / NOISE_STEP - gridMin;
+                const fz = z / NOISE_STEP - gridMin;
+                const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+                const xd = fx - x0, yd = fy - y0, zd = fz - z0;
+                const cx0 = Math.max(0, Math.min(x0, gridSize - 1));
+                const cx1 = Math.max(0, Math.min(x0 + 1, gridSize - 1));
+                const cy0 = Math.max(0, Math.min(y0, gridSize - 1));
+                const cy1 = Math.max(0, Math.min(y0 + 1, gridSize - 1));
+                const cz0 = Math.max(0, Math.min(z0, gridSize - 1));
+                const cz1 = Math.max(0, Math.min(z0 + 1, gridSize - 1));
+                const c000 = grid[cx0 + cy0 * gridSize + cz0 * gridSize * gridSize];
+                const c100 = grid[cx1 + cy0 * gridSize + cz0 * gridSize * gridSize];
+                const c010 = grid[cx0 + cy1 * gridSize + cz0 * gridSize * gridSize];
+                const c110 = grid[cx1 + cy1 * gridSize + cz0 * gridSize * gridSize];
+                const c001 = grid[cx0 + cy0 * gridSize + cz1 * gridSize * gridSize];
+                const c101 = grid[cx1 + cy0 * gridSize + cz1 * gridSize * gridSize];
+                const c011 = grid[cx0 + cy1 * gridSize + cz1 * gridSize * gridSize];
+                const c111 = grid[cx1 + cy1 * gridSize + cz1 * gridSize * gridSize];
+                const c00 = c000 * (1 - xd) + c100 * xd;
+                const c01 = c001 * (1 - xd) + c101 * xd;
+                const c10 = c010 * (1 - xd) + c110 * xd;
+                const c11 = c011 * (1 - xd) + c111 * xd;
+                const c0 = c00 * (1 - yd) + c10 * yd;
+                const c1 = c01 * (1 - yd) + c11 * yd;
+                return c0 * (1 - zd) + c1 * zd;
+            };
+
+            const totalSlices = maxX - minX + 1;
+            let processed = 0;
+            let lastUpdate = performance.now();
+
+            // Generate shell voxels
+            for (let x = minX; x <= maxX; x++) {
+                const dx2 = x * x;
+                const maxZDist = Math.sqrt(Math.max(0, outerBound * outerBound - dx2));
+                const zStart = Math.floor(-maxZDist);
+                const zEnd = Math.ceil(maxZDist);
+
+                for (let z = zStart; z <= zEnd; z++) {
+                    const distXZ2 = dx2 + z * z;
+                    if (distXZ2 > outerBound * outerBound) continue;
+
+                    const outerDY = Math.sqrt(Math.max(0, outerBound * outerBound - distXZ2)) / 1.3;
+                    const innerDY = distXZ2 < innerBound * innerBound
+                        ? Math.sqrt(innerBound * innerBound - distXZ2) / 1.3 : 0;
+
+                    const yRanges = innerDY > 0
+                        ? [[Math.floor(-outerDY), Math.ceil(-innerDY)], [Math.floor(innerDY), Math.ceil(outerDY)]]
+                        : [[Math.floor(-outerDY), Math.ceil(outerDY)]];
+
+                    for (const [yStart, yEnd] of yRanges) {
+                        for (let y = yStart; y <= yEnd; y++) {
+                            const distY = Math.abs(y) * 1.3;
+                            const dist = Math.sqrt(distXZ2 + distY * distY);
+                            if (dist < innerBound || dist > outerBound) continue;
+
+                            const noise = sampleNoise(noiseGrid1, x, y, z);
+                            const wallNoise = sampleNoise(noiseGrid2, x, y, z);
+                            const effectiveRadius = radius + noise + wallNoise;
+                            if (dist >= effectiveRadius) continue;
+
+                            // Check ceiling openings
+                            let inOpening = false;
+                            if (y > radius * 0.3) {
+                                for (const opening of ceilingOpenings) {
+                                    const openDist = Math.sqrt((x - opening.x) ** 2 + (z - opening.z) ** 2);
+                                    if (openDist < opening.radius) {
+                                        const edgeFactor = openDist / opening.radius;
+                                        const heightFactor = (y - radius * 0.3) / (radius * 0.4);
+                                        if (edgeFactor < 0.8 || (edgeFactor < 1.0 && heightFactor > 0.5)) {
+                                            inOpening = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!inOpening) {
+                                const shellThickness = 10 + sampleNoise(noiseGrid3, x, y, z);
+                                if (dist > effectiveRadius - shellThickness) {
+                                    // Generate color
+                                    const isFloor = y < 0;
+                                    const v = caveGen.pseudoRandom(x * 1000 + y * 100 + z);
+                                    let r, g, b;
+                                    if (isFloor) {
+                                        if (v > 0.95) { r = 180 + (v * 50) | 0; g = 170 + (v * 40) | 0; b = 140 + (v * 30) | 0; }
+                                        else if (v > 0.8) { r = 45 + (v * 15) | 0; g = 40 + (v * 15) | 0; b = 35 + (v * 10) | 0; }
+                                        else { r = 70 + (v * 25) | 0; g = 65 + (v * 20) | 0; b = 55 + (v * 20) | 0; }
+                                    } else {
+                                        if (v > 0.97) {
+                                            const t = (v * 3) | 0;
+                                            if (t === 0) { r = 100; g = 150; b = 200; }
+                                            else if (t === 1) { r = 200; g = 150; b = 100; }
+                                            else { r = 150; g = 200; b = 150; }
+                                        } else if (v > 0.85) { r = 50 + (v * 20) | 0; g = 70 + (v * 25) | 0; b = 50 + (v * 15) | 0; }
+                                        else { const base = 80 + (v * 30) | 0; r = base; g = base - 5; b = base - 10; }
+                                    }
+                                    voxels.push({ x, y, z, r, g, b });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                processed++;
+                const now = performance.now();
+                if (now - lastUpdate > 100 && progress) {
+                    progress(processed / totalSlices);
+                    lastUpdate = now;
+                    await this._delay(1);
+                }
+            }
+
+            return voxels;
+        }
+
+        // Apply a cave template to the world at a specific position
+        _applyCaveTemplate(voxels, centerX, centerY, centerZ) {
+            const world = this.engine.world;
+            for (const v of voxels) {
+                const wx = centerX + v.x;
+                const wy = centerY + v.y;
+                const wz = centerZ + v.z;
+                if (wx >= 0 && wx < world.worldSize &&
+                    wy >= 0 && wy < world.worldSize &&
+                    wz >= 0 && wz < world.worldSize) {
+                    world.setVoxel(wx, wy, wz, v.r, v.g, v.b);
+                }
+            }
+        }
+
+        // First-time setup: generate and cache cave templates
+        async _firstTimeSetup(progress, startFrom) {
+            const totalCaves = CaveCache.NUM_CAVES;
+
+            document.getElementById('loading').querySelector('h2').textContent =
+                '🏝️ First-Time Setup';
+
+            for (let i = startFrom; i < totalCaves; i++) {
+                const seed = 10000 + i * 7919; // Different seed for each cave
+                const baseProgress = i / totalCaves;
+                const nextProgress = (i + 1) / totalCaves;
+
+                progress(baseProgress, `Generating cave template ${i + 1}/${totalCaves}...`,
+                    'This only happens once!');
+                await this._delay(50);
+
+                console.time(`CACHE_CAVE_${i + 1}`);
+                const voxels = await this._generateCaveTemplate(seed, CAVE_RADIUS, (p) => {
+                    const totalP = baseProgress + p * (nextProgress - baseProgress);
+                    progress(totalP, `Generating cave template ${i + 1}/${totalCaves}: ${Math.floor(p * 100)}%`,
+                        'This only happens once!');
+                });
+                console.timeEnd(`CACHE_CAVE_${i + 1}`);
+
+                // Save to IndexedDB
+                progress(nextProgress - 0.01, `Saving cave ${i + 1} to cache...`, '');
+                await CaveCache.saveCave(i, voxels);
+                console.log(`Cave ${i + 1} cached: ${voxels.length} voxels`);
+            }
+
+            progress(1, 'Cave templates ready!', '');
+            await this._delay(300);
+
+            // Reset loading screen title
+            document.getElementById('loading').querySelector('h2').textContent =
+                '🏝️ Generating Island...';
+        }
 
         // Calculate positions for connected cave spheres (worm structure)
         _calculateCaveCenters() {
