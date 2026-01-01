@@ -310,6 +310,38 @@ def triangle_aabb_intersect(tri: Triangle, box_center: Vec3, box_half: Vec3) -> 
     return True
 
 
+def hollow_out(voxels: dict, grid_size: tuple) -> dict:
+    """Remove interior voxels, keeping only the shell/surface."""
+    print("Hollowing out interior voxels...")
+
+    grid_x, grid_y, grid_z = grid_size
+    surface_voxels = {}
+
+    # A voxel is on the surface if at least one neighbor is empty
+    directions = [
+        (1, 0, 0), (-1, 0, 0),
+        (0, 1, 0), (0, -1, 0),
+        (0, 0, 1), (0, 0, -1)
+    ]
+
+    for (vx, vy, vz), color in voxels.items():
+        is_surface = False
+
+        for dx, dy, dz in directions:
+            neighbor = (vx + dx, vy + dy, vz + dz)
+            # If neighbor is outside bounds or empty, this is a surface voxel
+            if neighbor not in voxels:
+                is_surface = True
+                break
+
+        if is_surface:
+            surface_voxels[(vx, vy, vz)] = color
+
+    removed = len(voxels) - len(surface_voxels)
+    print(f"  Removed {removed} interior voxels, {len(surface_voxels)} surface voxels remain")
+    return surface_voxels
+
+
 def voxelize(triangles: List[Triangle], bbox: BoundingBox, resolution: int) -> List[dict]:
     """Convert triangles to voxels."""
     print(f"Voxelizing at resolution {resolution}...")
@@ -414,6 +446,8 @@ def main():
                         help='Override color as R,G,B (e.g., --color 128,128,128)')
     parser.add_argument('--rotate-y', type=float, default=0,
                         help='Rotate model around Y axis in degrees')
+    parser.add_argument('--hollow', action='store_true',
+                        help='Make model hollow (remove interior voxels)')
 
     args = parser.parse_args()
 
@@ -462,6 +496,13 @@ def main():
 
     # Voxelize
     voxels, grid_size = voxelize(triangles, bbox, args.resolution)
+
+    # Hollow out interior if requested
+    if args.hollow:
+        voxel_dict = {(v['x'], v['y'], v['z']): (v['r'], v['g'], v['b']) for v in voxels}
+        voxel_dict = hollow_out(voxel_dict, grid_size)
+        voxels = [{'x': x, 'y': y, 'z': z, 'r': r, 'g': g, 'b': b}
+                  for (x, y, z), (r, g, b) in voxel_dict.items()]
 
     # Override color if requested
     if args.color:
