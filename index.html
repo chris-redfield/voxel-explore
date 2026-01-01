@@ -749,10 +749,16 @@
                 const lx = Math.floor(this.pseudoRandom(coralSeed + i * 100) * chunkSize);
                 const lz = Math.floor(this.pseudoRandom(coralSeed + i * 100 + 50) * chunkSize);
                 const h = heights[lx + lz * chunkSize];
-                
+
                 // Only underwater, not too deep
                 if (h >= SEA_LEVEL || h < SEA_LEVEL - 20) continue;
-                
+
+                // Skip beach transition zone
+                const coralNoiseX = startX + lx - worldOffset;
+                const coralNoiseZ = startZ + lz - worldOffset;
+                const coralIslandFactor = this.getIslandFactor(coralNoiseX, coralNoiseZ);
+                if (coralIslandFactor > 0.5 && coralIslandFactor < 1.5) continue;
+
                 const wx = startX + lx;
                 const wz = startZ + lz;
                 const coralChance = this.pseudoRandom(coralSeed + i);
