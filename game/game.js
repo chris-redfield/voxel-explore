@@ -23,16 +23,19 @@ class SeaCaveGame {
         this.lastFpsTime = performance.now();
 
         // Coral catalog for underwater flora
-        // Each entry: { path, gridSize: {x, y, z} } - gridSize used to calculate Y offset
+        // Each entry: { path, gridSize: {x, y, z}, noRotate } - gridSize used to calculate Y offset
         this.coralCatalog = [
             { path: 'assets/coral1.json', gridSize: { x: 11, y: 20, z: 7 } },   // Generated branching coral
             { path: 'assets/coral2.json', gridSize: { x: 8, y: 16, z: 6 } },    // Coral.obj
-            { path: 'assets/coral3.json', gridSize: { x: 11, y: 13, z: 16 } },  // Coral1.obj
+            { path: 'assets/coral3.json', gridSize: { x: 11, y: 13, z: 16 }, noRotate: true },  // Coral1.obj - asymmetric, don't rotate
             { path: 'assets/coral4.json', gridSize: { x: 11, y: 16, z: 10 } },  // Coral2.obj
             { path: 'assets/coral5.json', gridSize: { x: 15, y: 16, z: 14 } },  // Coral3.obj
             { path: 'assets/coral6.json', gridSize: { x: 3, y: 16, z: 16 } },   // Coral4.obj
             { path: 'assets/coral7.json', gridSize: { x: 6, y: 16, z: 8 } },    // Coral5.obj
         ];
+
+        // Cache for loaded coral JSON data (optimization for repeated placements)
+        this.coralCache = {};
 
         this._setupInput();
     }
@@ -277,32 +280,48 @@ class SeaCaveGame {
         await this.loadVoxelModel('assets/cabin.json', cabinX, cabinY, cabinZ);
 
         // ADD underwater flora / fauna
-        // For now, placing coral reefs near spawn on surface for quick iteration
         progress(0.876, 'Adding coral reefs...', '');
         await this._delay(10);
 
-        // Place one of each coral type in a row for testing
-        // Spread them out in front of spawn point
-        for (let i = 0; i < this.coralCatalog.length; i++) {
-            const coral = this.coralCatalog[i];
-            // Arrange in a semi-circle arc in front of spawn
-            const angle = (i / (this.coralCatalog.length - 1) - 0.5) * Math.PI * 0.6; // -54° to +54°
-            const distance = 18;
-            const dx = Math.sin(angle) * distance;
-            const dz = Math.cos(angle) * distance;
+        // Preload all coral assets for optimized placement
+        await this.preloadCorals();
 
-            const coralX = this.worldOffset + dx;
-            const coralZ = this.worldOffset + dz;
+        // Scatter corals randomly across the ocean floor
+        const coralCount = 300;  // Number of coral clusters to place
+        const worldSize = this.engine.world.worldSize;
+        const margin = 50;  // Stay away from world edges
+
+        // Simple seeded random for reproducible coral placement
+        let coralSeed = 12345;
+        const seededRandom = () => {
+            coralSeed = (coralSeed * 1103515245 + 12345) & 0x7fffffff;
+            return coralSeed / 0x7fffffff;
+        };
+
+        let coralsPlaced = 0;
+        for (let i = 0; i < coralCount; i++) {
+            // Random position across the world
+            const coralX = margin + seededRandom() * (worldSize - margin * 2);
+            const coralZ = margin + seededRandom() * (worldSize - margin * 2);
+
+            // Get terrain height at this position
             const coralNoiseX = coralX - this.worldOffset;
             const coralNoiseZ = coralZ - this.worldOffset;
-            const coralGroundHeight = this.terrain.getHeight(coralNoiseX, coralNoiseZ);
-            // Use gridSize.y / 2 as Y offset so coral sits on ground
-            const coralY = coralGroundHeight + Math.floor(coral.gridSize.y / 2);
+            const terrainHeight = this.terrain.getHeight(coralNoiseX, coralNoiseZ);
 
-            // Note: rotation disabled for detail voxels (sub-voxels don't rotate properly yet)
-            console.log(`Placing coral ${i + 1} (${coral.path}) at (${coralX}, ${coralY}, ${coralZ})`);
-            await this.loadVoxelModel(coral.path, coralX, coralY, coralZ);
+            // Only place coral underwater (below sea level) and on seafloor
+            if (terrainHeight < SEA_LEVEL - 5) {
+                // Random coral type and rotation
+                const coralIndex = Math.floor(seededRandom() * this.coralCatalog.length);
+                const coral = this.coralCatalog[coralIndex];
+                const rotation90 = coral.noRotate ? 0 : Math.floor(seededRandom() * 4);  // 0, 1, 2, or 3
+                const coralY = terrainHeight + Math.floor(coral.gridSize.y / 2);
+
+                this.placeCoralCached(coralIndex, coralX, coralY, coralZ, rotation90);
+                coralsPlaced++;
+            }
         }
+        console.log(`Placed ${coralsPlaced} corals on the ocean floor`)
 
         const genTime = performance.now();
         progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
@@ -506,6 +525,151 @@ class SeaCaveGame {
             console.error(`Failed to load voxel model: ${e}`);
             return null;
         }
+    }
+
+    // Preload all coral JSON files into cache for optimized repeated placement
+    async preloadCorals() {
+        console.log('Preloading coral assets...');
+        const promises = this.coralCatalog.map(async (coral) => {
+            try {
+                const response = await fetch(coral.path);
+                if (!response.ok) throw new Error(`Failed to load ${coral.path}`);
+                const data = await response.json();
+
+                // Validate sub-voxel coordinates
+                let invalidCount = 0;
+                if (data.hasDetail && data.detailVoxels) {
+                    for (const dv of data.detailVoxels) {
+                        for (const sv of dv.subVoxels) {
+                            if (sv.sx < 0 || sv.sx > 3 || sv.sy < 0 || sv.sy > 3 || sv.sz < 0 || sv.sz > 3) {
+                                invalidCount++;
+                            }
+                        }
+                    }
+                }
+                if (invalidCount > 0) {
+                    console.error(`  WARNING: ${coral.path} has ${invalidCount} invalid sub-voxel coordinates!`);
+                }
+
+                this.coralCache[coral.path] = data;
+                console.log(`  Cached ${coral.path} (${data.detailVoxels?.length || 0} detail voxels)`);
+            } catch (e) {
+                console.error(`Failed to preload coral: ${e}`);
+            }
+        });
+        await Promise.all(promises);
+        console.log(`Preloaded ${Object.keys(this.coralCache).length} coral assets`);
+    }
+
+    // Place a coral from cache with 90° rotation support (0, 90, 180, 270)
+    // This is optimized for many repeated placements
+    placeCoralCached(coralIndex, offsetX, offsetY, offsetZ, rotation90 = 0) {
+        const coral = this.coralCatalog[coralIndex];
+        const data = this.coralCache[coral.path];
+        if (!data) {
+            console.error(`Coral not cached: ${coral.path}`);
+            return 0;
+        }
+
+        const world = this.engine.world;
+        const gridSize = data.gridSize;
+        const centerX = gridSize.x / 2;
+        const centerY = gridSize.y / 2;
+        const centerZ = gridSize.z / 2;
+
+        // Rotation lookup for 90° increments (around Y axis)
+        // rotation90: 0 = 0°, 1 = 90°, 2 = 180°, 3 = 270°
+        const rot = rotation90 % 4;
+
+        let placed = 0;
+
+        // Place regular voxels
+        for (const v of data.voxels) {
+            let lx = v.x - centerX;
+            let ly = v.y - centerY;
+            let lz = v.z - centerZ;
+
+            // Apply 90° rotation around Y axis
+            if (rot === 1) { // 90°
+                const tmp = lx;
+                lx = -lz;
+                lz = tmp;
+            } else if (rot === 2) { // 180°
+                lx = -lx;
+                lz = -lz;
+            } else if (rot === 3) { // 270°
+                const tmp = lx;
+                lx = lz;
+                lz = -tmp;
+            }
+
+            const wx = Math.floor(offsetX + lx);
+            const wy = Math.floor(offsetY + ly);
+            const wz = Math.floor(offsetZ + lz);
+
+            if (wx >= 0 && wx < world.worldSize &&
+                wy >= 0 && wy < world.worldSize &&
+                wz >= 0 && wz < world.worldSize) {
+                world.setVoxel(wx, wy, wz, v.r, v.g, v.b);
+                placed++;
+            }
+        }
+
+        // Place detail voxels with sub-voxel rotation
+        if (data.hasDetail && data.detailVoxels) {
+            for (const dv of data.detailVoxels) {
+                let lx = dv.x - centerX;
+                let ly = dv.y - centerY;
+                let lz = dv.z - centerZ;
+
+                // Apply 90° rotation to parent voxel position
+                if (rot === 1) {
+                    const tmp = lx;
+                    lx = -lz;
+                    lz = tmp;
+                } else if (rot === 2) {
+                    lx = -lx;
+                    lz = -lz;
+                } else if (rot === 3) {
+                    const tmp = lx;
+                    lx = lz;
+                    lz = -tmp;
+                }
+
+                const wx = Math.floor(offsetX + lx);
+                const wy = Math.floor(offsetY + ly);
+                const wz = Math.floor(offsetZ + lz);
+
+                if (wx >= 0 && wx < world.worldSize &&
+                    wy >= 0 && wy < world.worldSize &&
+                    wz >= 0 && wz < world.worldSize) {
+                    for (const sv of dv.subVoxels) {
+                        let sx = sv.sx;
+                        let sy = sv.sy;
+                        let sz = sv.sz;
+
+                        // Rotate sub-voxel coordinates within 4x4x4 cell
+                        if (rot === 1) { // 90°: (sx, sy, sz) -> (3-sz, sy, sx)
+                            const tmp = sx;
+                            sx = 3 - sz;
+                            sz = tmp;
+                        } else if (rot === 2) { // 180°: (sx, sy, sz) -> (3-sx, sy, 3-sz)
+                            sx = 3 - sx;
+                            sz = 3 - sz;
+                        } else if (rot === 3) { // 270°: (sx, sy, sz) -> (sz, sy, 3-sx)
+                            const tmp = sx;
+                            sx = sz;
+                            sz = 3 - tmp;
+                        }
+
+                        world.setDetailVoxel(wx, wy, wz, sx, sy, sz, sv.r, sv.g, sv.b);
+                        placed++;
+                    }
+                }
+            }
+        }
+
+        return placed;
     }
 
     // Generate a cave template (voxels stored relative to center)

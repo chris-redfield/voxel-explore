@@ -843,7 +843,7 @@ class BrickMapWorld {
         this.detailBricks = new Map();      // Map<detailIndex, Uint8Array>
         this.nextDetailIndex = 1;           // 1-based (0 = no detail)
         this.dirtyDetailBricks = new Set(); // Detail brick indices needing upload
-        this.detailAtlasSize = 32;          // 32³ = 32,768 detail bricks max
+        this.detailAtlasSize = 48;          // 48³ = 110,592 detail bricks max
         this.detailBrickSize = 4;           // 4³ sub-voxels per detail brick
         this.detailCount = 0;
 
@@ -1032,6 +1032,17 @@ class BrickMapWorld {
 
         // Create detail brick if needed
         if (detailIndex === 0) {
+            // Check if we've exceeded atlas capacity
+            const maxDetailBricks = this.detailAtlasSize * this.detailAtlasSize * this.detailAtlasSize;
+            if (this.nextDetailIndex >= maxDetailBricks) {
+                // Atlas full - can't create more detail bricks
+                // Fall back to setting regular voxel instead
+                if (!this._detailAtlasWarned) {
+                    console.warn(`Detail atlas full (max ${maxDetailBricks} detail bricks). Some detail will be lost.`);
+                    this._detailAtlasWarned = true;
+                }
+                return false;
+            }
             detailIndex = this.nextDetailIndex++;
             this.detailCount++;
 
@@ -1462,6 +1473,17 @@ class VoxelEngine {
 
             for (const [detailIndex, detailData] of this.world.detailBricks) {
                 const pos = this.world.getDetailAtlasPos(detailIndex);
+                const atlasVoxelSize = this.world.detailAtlasSize * detailSize;
+
+                // Debug: Check for overflow before upload
+                const endX = pos.x * detailSize + detailSize;
+                const endY = pos.y * detailSize + detailSize;
+                const endZ = pos.z * detailSize + detailSize;
+                if (endX > atlasVoxelSize || endY > atlasVoxelSize || endZ > atlasVoxelSize) {
+                    console.error(`Detail atlas overflow! detailIndex=${detailIndex}, pos=(${pos.x},${pos.y},${pos.z}), atlasSize=${this.world.detailAtlasSize}, maxIndex=${this.world.detailAtlasSize ** 3}`);
+                    continue; // Skip this brick to prevent WebGL error
+                }
+
                 gl.texSubImage3D(
                     gl.TEXTURE_3D, 0,
                     pos.x * detailSize, pos.y * detailSize, pos.z * detailSize,
@@ -1538,6 +1560,14 @@ class VoxelEngine {
                 const atlasX = pos.x * detailSize;
                 const atlasY = pos.y * detailSize;
                 const atlasZ = pos.z * detailSize;
+                const atlasVoxelSize = this.world.detailAtlasSize * detailSize;
+
+                // Skip if overflow
+                if (atlasX + detailSize > atlasVoxelSize ||
+                    atlasY + detailSize > atlasVoxelSize ||
+                    atlasZ + detailSize > atlasVoxelSize) {
+                    continue;
+                }
 
                 // Upload just this 4×4×4 detail brick
                 gl.texSubImage3D(
