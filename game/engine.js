@@ -69,8 +69,14 @@ uniform vec3 u_orbDirections[16];
 uniform vec3 u_orbColors[16];
 uniform float u_orbIntensity;
 
+// Detail atlas for sub-voxels (3rd hierarchy level)
+uniform sampler3D u_detailAtlas;     // Detail atlas: packed 4³ detail bricks
+uniform vec3 u_detailAtlasSize;      // Size of detail atlas in bricks
+uniform int u_detailBrickSize;       // Size of each detail brick (4)
+
 // Constants
 const int BRICK_SIZE = 8;
+const int DETAIL_BRICK_SIZE = 4;
 
 // Get world size in voxels
 vec3 getWorldSize() {
@@ -118,10 +124,40 @@ ivec3 brickIndexToAtlasPos(uint brickIndex) {
 // Get voxel from brick atlas
 vec4 getVoxelFromBrick(uint brickIndex, ivec3 localPos) {
     if (brickIndex == 0u) return vec4(0.0);
-    
+
     ivec3 atlasPos = brickIndexToAtlasPos(brickIndex);
     ivec3 texelPos = atlasPos * BRICK_SIZE + localPos;
     return texelFetch(u_brickAtlas, texelPos, 0);
+}
+
+// Decode detail brick index from voxel RGB (24-bit)
+// Returns 0 if not a detail marker (alpha != 1.0)
+uint decodeDetailIndex(vec4 voxel) {
+    if (voxel.a < 0.999) return 0u;  // Not a detail marker (alpha must be 255)
+    uint r = uint(voxel.r * 255.0 + 0.5);
+    uint g = uint(voxel.g * 255.0 + 0.5);
+    uint b = uint(voxel.b * 255.0 + 0.5);
+    return r | (g << 8u) | (b << 16u);
+}
+
+// Convert detail brick index to atlas position
+ivec3 detailIndexToAtlasPos(uint detailIndex) {
+    int idx = int(detailIndex) - 1;  // detail indices are 1-based
+    int atlasWidth = int(u_detailAtlasSize.x);
+    int atlasHeight = int(u_detailAtlasSize.y);
+    int x = idx % atlasWidth;
+    int y = (idx / atlasWidth) % atlasHeight;
+    int z = idx / (atlasWidth * atlasHeight);
+    return ivec3(x, y, z);
+}
+
+// Get sub-voxel from detail atlas
+vec4 getDetailVoxel(uint detailIndex, ivec3 localPos) {
+    if (detailIndex == 0u) return vec4(0.0);
+
+    ivec3 atlasPos = detailIndexToAtlasPos(detailIndex);
+    ivec3 texelPos = atlasPos * DETAIL_BRICK_SIZE + localPos;
+    return texelFetch(u_detailAtlas, texelPos, 0);
 }
 
 // Hit result structure
@@ -135,6 +171,118 @@ struct HitResult {
     bool passedThroughWater;
     float waterDistance;
 };
+
+// DDA through a 4x4x4 detail brick (sub-voxels within a single voxel)
+// Must be defined before traceBrick which calls it
+bool traceDetailBrick(uint detailIndex, vec3 rayOrigin, vec3 rayDir,
+                      vec3 parentVoxelPos, int entrySide, ivec3 entryStep,
+                      inout HitResult result) {
+
+    // Sub-voxel size (each sub-voxel is 1/4 of a regular voxel)
+    float subVoxelSize = 1.0 / float(DETAIL_BRICK_SIZE);  // 0.25
+
+    // Safe ray direction
+    vec3 safeRayDir = rayDir;
+    safeRayDir.x = abs(rayDir.x) < 1e-8 ? (rayDir.x >= 0.0 ? 1e-8 : -1e-8) : rayDir.x;
+    safeRayDir.y = abs(rayDir.y) < 1e-8 ? (rayDir.y >= 0.0 ? 1e-8 : -1e-8) : rayDir.y;
+    safeRayDir.z = abs(rayDir.z) < 1e-8 ? (rayDir.z >= 0.0 ? 1e-8 : -1e-8) : rayDir.z;
+
+    // Find entry point into detail brick (parent voxel bounds)
+    vec3 detailMin = parentVoxelPos;
+    vec3 detailMax = parentVoxelPos + 1.0;
+
+    vec3 tMin = (detailMin - rayOrigin) / safeRayDir;
+    vec3 tMax = (detailMax - rayOrigin) / safeRayDir;
+    vec3 t1 = min(tMin, tMax);
+    vec3 t2 = max(tMin, tMax);
+    float tNear = max(max(t1.x, t1.y), t1.z);
+    float tFar = min(min(t2.x, t2.y), t2.z);
+
+    if (tNear > tFar || tFar < 0.0) return false;
+
+    // Determine entry face
+    int side;
+    if (t1.x >= t1.y && t1.x >= t1.z) side = 0;
+    else if (t1.y >= t1.x && t1.y >= t1.z) side = 1;
+    else side = 2;
+
+    float tStart = max(0.0, tNear) + 0.0001;
+    vec3 startPos = rayOrigin + safeRayDir * tStart;
+
+    // Local position within detail brick (0 to DETAIL_BRICK_SIZE)
+    vec3 localStart = (startPos - parentVoxelPos) * float(DETAIL_BRICK_SIZE);
+    ivec3 mapPos = ivec3(floor(localStart));
+    mapPos = clamp(mapPos, ivec3(0), ivec3(DETAIL_BRICK_SIZE - 1));
+
+    // DDA setup
+    ivec3 step = ivec3(
+        safeRayDir.x >= 0.0 ? 1 : -1,
+        safeRayDir.y >= 0.0 ? 1 : -1,
+        safeRayDir.z >= 0.0 ? 1 : -1
+    );
+
+    vec3 deltaDist = abs(vec3(1.0) / safeRayDir);
+    vec3 sideDist = (vec3(step) * (vec3(mapPos) - localStart) + (vec3(step) * 0.5) + 0.5) * deltaDist;
+
+    // DDA through detail brick
+    for (int i = 0; i < DETAIL_BRICK_SIZE * 3; i++) {
+        // Check sub-voxel
+        vec4 subVoxel = getDetailVoxel(detailIndex, mapPos);
+        if (subVoxel.a > 0.0) {
+            result.hit = true;
+            result.color = subVoxel;
+
+            // Position: parent voxel + sub-voxel offset (in sub-voxel units)
+            result.pos = parentVoxelPos + vec3(mapPos) * subVoxelSize;
+
+            // Normal based on entry side
+            result.normal = vec3(0.0);
+            if (side == 0) result.normal.x = -float(step.x);
+            else if (side == 1) result.normal.y = -float(step.y);
+            else result.normal.z = -float(step.z);
+
+            // Distance calculation
+            vec3 subVoxelWorldPos = parentVoxelPos + vec3(mapPos) * subVoxelSize;
+            if (side == 0) result.distance = (subVoxelWorldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0 * subVoxelSize) / safeRayDir.x;
+            else if (side == 1) result.distance = (subVoxelWorldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0 * subVoxelSize) / safeRayDir.y;
+            else result.distance = (subVoxelWorldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0 * subVoxelSize) / safeRayDir.z;
+
+            return true;
+        }
+
+        // DDA step
+        if (sideDist.x < sideDist.y) {
+            if (sideDist.x < sideDist.z) {
+                sideDist.x += deltaDist.x;
+                mapPos.x += step.x;
+                side = 0;
+            } else {
+                sideDist.z += deltaDist.z;
+                mapPos.z += step.z;
+                side = 2;
+            }
+        } else {
+            if (sideDist.y < sideDist.z) {
+                sideDist.y += deltaDist.y;
+                mapPos.y += step.y;
+                side = 1;
+            } else {
+                sideDist.z += deltaDist.z;
+                mapPos.z += step.z;
+                side = 2;
+            }
+        }
+
+        // Exit detail brick bounds
+        if (mapPos.x < 0 || mapPos.x >= DETAIL_BRICK_SIZE ||
+            mapPos.y < 0 || mapPos.y >= DETAIL_BRICK_SIZE ||
+            mapPos.z < 0 || mapPos.z >= DETAIL_BRICK_SIZE) {
+            break;
+        }
+    }
+
+    return false;
+}
 
 // DDA through a single brick
 bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir, 
@@ -230,24 +378,37 @@ bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir,
                 }
                 // Continue DDA to find what's behind/below the water
             } else {
-                // Non-water voxel - normal rendering
-                result.hit = true;
-                result.color = voxel;
-                result.pos = brickMin + vec3(mapPos);
+                // Non-water voxel - check if it has detail (sub-voxels)
+                uint detailIndex = decodeDetailIndex(voxel);
 
-                // Normal based on side
-                result.normal = vec3(0.0);
-                if (side == 0) result.normal.x = -float(step.x);
-                else if (side == 1) result.normal.y = -float(step.y);
-                else result.normal.z = -float(step.z);
+                if (detailIndex > 0u) {
+                    // Has detail - trace through sub-voxels
+                    vec3 voxelWorldPos = brickMin + vec3(mapPos);
+                    if (traceDetailBrick(detailIndex, rayOrigin, rayDir, voxelWorldPos,
+                                         side, step, result)) {
+                        return true;
+                    }
+                    // Detail brick was sparse and ray passed through - continue DDA
+                } else {
+                    // Regular solid voxel - normal rendering
+                    result.hit = true;
+                    result.color = voxel;
+                    result.pos = brickMin + vec3(mapPos);
 
-                // Distance calculation
-                vec3 worldPos = brickMin + vec3(mapPos);
-                if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
-                else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
-                else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
+                    // Normal based on side
+                    result.normal = vec3(0.0);
+                    if (side == 0) result.normal.x = -float(step.x);
+                    else if (side == 1) result.normal.y = -float(step.y);
+                    else result.normal.z = -float(step.z);
 
-                return true;
+                    // Distance calculation
+                    vec3 worldPos = brickMin + vec3(mapPos);
+                    if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
+                    else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
+                    else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
+
+                    return true;
+                }
             }
         }
         
@@ -677,7 +838,15 @@ class BrickMapWorld {
         // 96³ = 884,736 bricks, texture = 768³ (~1.8GB VRAM)
         this.atlasSize = 96;
         this.brickAtlasData = null;
-        
+
+        // Detail brick storage (3rd hierarchy level for sub-voxels)
+        this.detailBricks = new Map();      // Map<detailIndex, Uint8Array>
+        this.nextDetailIndex = 1;           // 1-based (0 = no detail)
+        this.dirtyDetailBricks = new Set(); // Detail brick indices needing upload
+        this.detailAtlasSize = 32;          // 32³ = 32,768 detail bricks max
+        this.detailBrickSize = 4;           // 4³ sub-voxels per detail brick
+        this.detailCount = 0;
+
         // Stats
         this.voxelCount = 0;
         this.brickCount = 0;
@@ -711,7 +880,34 @@ class BrickMapWorld {
     _getBrickLocalIndex(lx, ly, lz) {
         return (lx + ly * this.brickSize + lz * this.brickSize * this.brickSize) * 4;
     }
-    
+
+    // Detail brick helper methods
+    _getDetailLocalIndex(subX, subY, subZ) {
+        return (subX + subY * this.detailBrickSize +
+                subZ * this.detailBrickSize * this.detailBrickSize) * 4;
+    }
+
+    _decodeDetailIndex(r, g, b) {
+        return r | (g << 8) | (b << 16);
+    }
+
+    _encodeDetailIndex(index) {
+        return {
+            r: index & 0xFF,
+            g: (index >> 8) & 0xFF,
+            b: (index >> 16) & 0xFF
+        };
+    }
+
+    getDetailAtlasPos(detailIndex) {
+        const idx = detailIndex - 1;  // Convert to 0-based
+        return {
+            x: idx % this.detailAtlasSize,
+            y: Math.floor(idx / this.detailAtlasSize) % this.detailAtlasSize,
+            z: Math.floor(idx / (this.detailAtlasSize * this.detailAtlasSize))
+        };
+    }
+
     _getOrCreateBrick(cx, cy, cz) {
         const coarseIdx = this._getCoarseIndex(cx, cy, cz);
         if (coarseIdx < 0) return null;
@@ -736,25 +932,28 @@ class BrickMapWorld {
         return { brick: this.bricks.get(brickIndex), index: brickIndex };
     }
     
-    setVoxel(x, y, z, r, g, b, a = 255) {
-        if (x < 0 || x >= this.worldSize || 
-            y < 0 || y >= this.worldSize || 
+    setVoxel(x, y, z, r, g, b, a = 254) {
+        if (x < 0 || x >= this.worldSize ||
+            y < 0 || y >= this.worldSize ||
             z < 0 || z >= this.worldSize) {
             return false;
         }
-        
+
+        // Clamp alpha to 254 - alpha=255 is reserved for detail markers
+        const clampedAlpha = Math.min(a, 254);
+
         const [cx, cy, cz] = this._worldToCoarse(x, y, z);
         const [lx, ly, lz] = this._worldToLocal(x, y, z);
-        
+
         const result = this._getOrCreateBrick(cx, cy, cz);
         if (!result) return false;
-        
+
         const { brick, index } = result;
         const idx = this._getBrickLocalIndex(lx, ly, lz);
         brick[idx] = r;
         brick[idx + 1] = g;
         brick[idx + 2] = b;
-        brick[idx + 3] = a;
+        brick[idx + 3] = clampedAlpha;
         
         // Mark brick as dirty for incremental upload
         this.dirtyBricks.add(index);
@@ -789,7 +988,142 @@ class BrickMapWorld {
             a: brick[idx + 3]
         };
     }
-    
+
+    /**
+     * Set a sub-voxel within a voxel's 4x4x4 detail brick
+     * @param {number} x, y, z - World voxel coordinates
+     * @param {number} subX, subY, subZ - Sub-voxel coords within detail (0-3)
+     * @param {number} r, g, b - Color values (0-255)
+     * @returns {boolean} Success
+     */
+    setDetailVoxel(x, y, z, subX, subY, subZ, r, g, b) {
+        // Validate world coordinates
+        if (x < 0 || x >= this.worldSize ||
+            y < 0 || y >= this.worldSize ||
+            z < 0 || z >= this.worldSize) {
+            return false;
+        }
+
+        // Validate sub-voxel coordinates
+        if (subX < 0 || subX >= this.detailBrickSize ||
+            subY < 0 || subY >= this.detailBrickSize ||
+            subZ < 0 || subZ >= this.detailBrickSize) {
+            return false;
+        }
+
+        // Get or create the parent voxel's brick
+        const [cx, cy, cz] = this._worldToCoarse(x, y, z);
+        const [lx, ly, lz] = this._worldToLocal(x, y, z);
+
+        const result = this._getOrCreateBrick(cx, cy, cz);
+        if (!result) return false;
+
+        const { brick, index: brickIndex } = result;
+        const voxelIdx = this._getBrickLocalIndex(lx, ly, lz);
+
+        // Check if this voxel already has a detail brick
+        let detailIndex = 0;
+        if (brick[voxelIdx + 3] === 255) {
+            // Alpha is 255, might have detail - decode RGB
+            detailIndex = this._decodeDetailIndex(
+                brick[voxelIdx], brick[voxelIdx + 1], brick[voxelIdx + 2]
+            );
+        }
+
+        // Create detail brick if needed
+        if (detailIndex === 0) {
+            detailIndex = this.nextDetailIndex++;
+            this.detailCount++;
+
+            // Allocate detail brick data (4x4x4 x 4 bytes RGBA)
+            const detailData = new Uint8Array(
+                this.detailBrickSize * this.detailBrickSize * this.detailBrickSize * 4
+            );
+            this.detailBricks.set(detailIndex, detailData);
+
+            // Update parent voxel to reference detail brick
+            const encoded = this._encodeDetailIndex(detailIndex);
+            brick[voxelIdx] = encoded.r;
+            brick[voxelIdx + 1] = encoded.g;
+            brick[voxelIdx + 2] = encoded.b;
+            brick[voxelIdx + 3] = 255;  // Marker for "has detail"
+
+            // Mark parent brick as dirty
+            this.dirtyBricks.add(brickIndex);
+        }
+
+        // Set the sub-voxel in detail brick
+        const detailData = this.detailBricks.get(detailIndex);
+        const subIdx = this._getDetailLocalIndex(subX, subY, subZ);
+        detailData[subIdx] = r;
+        detailData[subIdx + 1] = g;
+        detailData[subIdx + 2] = b;
+        detailData[subIdx + 3] = 255;  // Solid
+
+        // Mark detail brick as dirty
+        this.dirtyDetailBricks.add(detailIndex);
+
+        return true;
+    }
+
+    /**
+     * Get a sub-voxel from a voxel's detail brick
+     */
+    getDetailVoxel(x, y, z, subX, subY, subZ) {
+        // Get parent voxel
+        const voxel = this.getVoxel(x, y, z);
+        if (!voxel || voxel.a !== 255) return null;
+
+        // Decode detail index
+        const detailIndex = this._decodeDetailIndex(voxel.r, voxel.g, voxel.b);
+        if (detailIndex === 0) return null;  // No detail brick
+
+        const detailData = this.detailBricks.get(detailIndex);
+        if (!detailData) return null;
+
+        // Validate sub-voxel coordinates
+        if (subX < 0 || subX >= this.detailBrickSize ||
+            subY < 0 || subY >= this.detailBrickSize ||
+            subZ < 0 || subZ >= this.detailBrickSize) {
+            return null;
+        }
+
+        const subIdx = this._getDetailLocalIndex(subX, subY, subZ);
+        return {
+            r: detailData[subIdx],
+            g: detailData[subIdx + 1],
+            b: detailData[subIdx + 2],
+            a: detailData[subIdx + 3]
+        };
+    }
+
+    /**
+     * Clear a sub-voxel (set to empty)
+     */
+    clearDetailVoxel(x, y, z, subX, subY, subZ) {
+        const voxel = this.getVoxel(x, y, z);
+        if (!voxel || voxel.a !== 255) return false;
+
+        const detailIndex = this._decodeDetailIndex(voxel.r, voxel.g, voxel.b);
+        if (detailIndex === 0) return false;
+
+        const detailData = this.detailBricks.get(detailIndex);
+        if (!detailData) return false;
+
+        // Validate sub-voxel coordinates
+        if (subX < 0 || subX >= this.detailBrickSize ||
+            subY < 0 || subY >= this.detailBrickSize ||
+            subZ < 0 || subZ >= this.detailBrickSize) {
+            return false;
+        }
+
+        const subIdx = this._getDetailLocalIndex(subX, subY, subZ);
+        detailData[subIdx + 3] = 0;  // Set alpha to 0 (empty)
+
+        this.dirtyDetailBricks.add(detailIndex);
+        return true;
+    }
+
     clear() {
         this.coarseGrid.fill(0);
         this.bricks.clear();
@@ -798,6 +1132,11 @@ class BrickMapWorld {
         this.brickCount = 0;
         this.dirtyBricks.clear();
         this.coarseGridDirty = true;
+        // Clear detail structures
+        this.detailBricks.clear();
+        this.nextDetailIndex = 1;
+        this.dirtyDetailBricks.clear();
+        this.detailCount = 0;
     }
     
     // Get atlas position for a brick index
@@ -814,15 +1153,24 @@ class BrickMapWorld {
     getDirtyBricksAndClear() {
         const dirty = Array.from(this.dirtyBricks);
         this.dirtyBricks.clear();
+        const dirtyDetails = Array.from(this.dirtyDetailBricks);
+        this.dirtyDetailBricks.clear();
         const coarseDirty = this.coarseGridDirty;
         this.coarseGridDirty = false;
-        return { bricks: dirty, coarseGridDirty: coarseDirty };
+        return {
+            bricks: dirty,
+            coarseGridDirty: coarseDirty,
+            detailBricks: dirtyDetails
+        };
     }
-    
+
     // Mark all bricks as dirty (for full upload)
     markAllDirty() {
         for (const brickIndex of this.bricks.keys()) {
             this.dirtyBricks.add(brickIndex);
+        }
+        for (const detailIndex of this.detailBricks.keys()) {
+            this.dirtyDetailBricks.add(detailIndex);
         }
         this.coarseGridDirty = true;
     }
@@ -882,11 +1230,13 @@ class BrickMapWorld {
     getMemoryUsage() {
         const coarseBytes = this.coarseGrid.byteLength;
         const brickBytes = this.brickCount * this.brickSize * this.brickSize * this.brickSize * 4;
+        const detailBytes = this.detailCount * this.detailBrickSize * this.detailBrickSize * this.detailBrickSize * 4;
         return {
             coarseGrid: coarseBytes,
             bricks: brickBytes,
-            total: coarseBytes + brickBytes,
-            totalMB: (coarseBytes + brickBytes) / (1024 * 1024)
+            detailBricks: detailBytes,
+            total: coarseBytes + brickBytes + detailBytes,
+            totalMB: (coarseBytes + brickBytes + detailBytes) / (1024 * 1024)
         };
     }
 }
@@ -930,6 +1280,7 @@ class VoxelEngine {
         this.vao = null;
         this.coarseGridTexture = null;
         this.brickAtlasTexture = null;
+        this.detailAtlasTexture = null;
         this.locations = {};
         
         // Initialize
@@ -1010,6 +1361,10 @@ class VoxelEngine {
             u_orbDirections: gl.getUniformLocation(this.program, 'u_orbDirections'),
             u_orbColors: gl.getUniformLocation(this.program, 'u_orbColors'),
             u_orbIntensity: gl.getUniformLocation(this.program, 'u_orbIntensity'),
+            // Detail atlas uniforms
+            u_detailAtlas: gl.getUniformLocation(this.program, 'u_detailAtlas'),
+            u_detailAtlasSize: gl.getUniformLocation(this.program, 'u_detailAtlasSize'),
+            u_detailBrickSize: gl.getUniformLocation(this.program, 'u_detailBrickSize'),
         };
         
         // Create fullscreen quad
@@ -1033,11 +1388,12 @@ class VoxelEngine {
     
     _createTextures() {
         const gl = this.gl;
-        
+
         // Cleanup old textures
         if (this.coarseGridTexture) gl.deleteTexture(this.coarseGridTexture);
         if (this.brickAtlasTexture) gl.deleteTexture(this.brickAtlasTexture);
-        
+        if (this.detailAtlasTexture) gl.deleteTexture(this.detailAtlasTexture);
+
         // Create coarse grid texture (R32UI - unsigned int)
         this.coarseGridTexture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
@@ -1046,11 +1402,11 @@ class VoxelEngine {
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-        
+
         const coarseSize = this.world.coarseSize;
-        gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32UI, coarseSize, coarseSize, coarseSize, 
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32UI, coarseSize, coarseSize, coarseSize,
                       0, gl.RED_INTEGER, gl.UNSIGNED_INT, this.world.coarseGrid);
-        
+
         // Create brick atlas texture (RGBA8)
         this.brickAtlasTexture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
@@ -1059,47 +1415,83 @@ class VoxelEngine {
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-        
+
         // Initialize empty atlas
         const atlasVoxelSize = this.world.atlasSize * this.world.brickSize;
         gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, atlasVoxelSize, atlasVoxelSize, atlasVoxelSize,
+                      0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+        // Create detail atlas texture (RGBA8) for sub-voxel data
+        this.detailAtlasTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_3D, this.detailAtlasTexture);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+
+        // Initialize empty detail atlas (32 bricks x 4 voxels = 128³)
+        const detailAtlasVoxelSize = this.world.detailAtlasSize * this.world.detailBrickSize;
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8,
+                      detailAtlasVoxelSize, detailAtlasVoxelSize, detailAtlasVoxelSize,
                       0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     }
     
     uploadWorld() {
         if (!this.world) return;
-        
+
         const gl = this.gl;
-        
+
         // Upload coarse grid
         gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
         const coarseSize = this.world.coarseSize;
         gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, coarseSize, coarseSize, coarseSize,
                          gl.RED_INTEGER, gl.UNSIGNED_INT, this.world.coarseGrid);
-        
+
         // Build and upload brick atlas
         this.world.buildAtlas();
         gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
         const atlasVoxelSize = this.world.atlasSize * this.world.brickSize;
         gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, atlasVoxelSize, atlasVoxelSize, atlasVoxelSize,
                          gl.RGBA, gl.UNSIGNED_BYTE, this.world.brickAtlasData);
-        
+
+        // Upload all detail bricks if any exist
+        if (this.world.detailBricks.size > 0) {
+            gl.bindTexture(gl.TEXTURE_3D, this.detailAtlasTexture);
+            const detailSize = this.world.detailBrickSize;
+
+            for (const [detailIndex, detailData] of this.world.detailBricks) {
+                const pos = this.world.getDetailAtlasPos(detailIndex);
+                gl.texSubImage3D(
+                    gl.TEXTURE_3D, 0,
+                    pos.x * detailSize, pos.y * detailSize, pos.z * detailSize,
+                    detailSize, detailSize, detailSize,
+                    gl.RGBA, gl.UNSIGNED_BYTE,
+                    detailData
+                );
+            }
+        }
+
         // Clear dirty tracking since we uploaded everything
         this.world.dirtyBricks.clear();
+        this.world.dirtyDetailBricks.clear();
         this.world.coarseGridDirty = false;
-        
+
         this.world.countVoxels();
     }
     
     // Incremental upload - only uploads changed bricks (FAST!)
     uploadDirtyBricks() {
-        if (!this.world) return 0;
-        
+        if (!this.world) return { bricks: 0, details: 0 };
+
         const gl = this.gl;
-        const { bricks: dirtyBricks, coarseGridDirty } = this.world.getDirtyBricksAndClear();
-        
-        if (dirtyBricks.length === 0 && !coarseGridDirty) return 0;
-        
+        const { bricks: dirtyBricks, coarseGridDirty, detailBricks: dirtyDetails } =
+            this.world.getDirtyBricksAndClear();
+
+        if (dirtyBricks.length === 0 && !coarseGridDirty && dirtyDetails.length === 0) {
+            return { bricks: 0, details: 0 };
+        }
+
         // Upload coarse grid if needed (always fast - just indices)
         if (coarseGridDirty) {
             gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
@@ -1107,21 +1499,21 @@ class VoxelEngine {
             gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, coarseSize, coarseSize, coarseSize,
                              gl.RED_INTEGER, gl.UNSIGNED_INT, this.world.coarseGrid);
         }
-        
+
         // Upload only dirty bricks - each is just 8³×4 = 2KB!
         if (dirtyBricks.length > 0) {
             gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
             const brickSize = this.world.brickSize;
-            
+
             for (const brickIndex of dirtyBricks) {
                 const brickData = this.world.bricks.get(brickIndex);
                 if (!brickData) continue;
-                
+
                 const pos = this.world.getBrickAtlasPos(brickIndex);
                 const atlasX = pos.x * brickSize;
                 const atlasY = pos.y * brickSize;
                 const atlasZ = pos.z * brickSize;
-                
+
                 // Upload just this 8×8×8 brick
                 gl.texSubImage3D(
                     gl.TEXTURE_3D, 0,
@@ -1132,9 +1524,34 @@ class VoxelEngine {
                 );
             }
         }
-        
+
+        // Upload dirty detail bricks - each is just 4³×4 = 256 bytes!
+        if (dirtyDetails.length > 0) {
+            gl.bindTexture(gl.TEXTURE_3D, this.detailAtlasTexture);
+            const detailSize = this.world.detailBrickSize;
+
+            for (const detailIndex of dirtyDetails) {
+                const detailData = this.world.detailBricks.get(detailIndex);
+                if (!detailData) continue;
+
+                const pos = this.world.getDetailAtlasPos(detailIndex);
+                const atlasX = pos.x * detailSize;
+                const atlasY = pos.y * detailSize;
+                const atlasZ = pos.z * detailSize;
+
+                // Upload just this 4×4×4 detail brick
+                gl.texSubImage3D(
+                    gl.TEXTURE_3D, 0,
+                    atlasX, atlasY, atlasZ,
+                    detailSize, detailSize, detailSize,
+                    gl.RGBA, gl.UNSIGNED_BYTE,
+                    detailData
+                );
+            }
+        }
+
         this.world.countVoxels();
-        return dirtyBricks.length;
+        return { bricks: dirtyBricks.length, details: dirtyDetails.length };
     }
     
     resize(width, height) {
@@ -1160,13 +1577,22 @@ class VoxelEngine {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
         gl.uniform1i(this.locations.u_brickAtlas, 1);
-        
+
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_3D, this.detailAtlasTexture);
+        gl.uniform1i(this.locations.u_detailAtlas, 2);
+
         // Brick map parameters
         const cs = this.world.coarseSize;
         gl.uniform3f(this.locations.u_coarseGridSize, cs, cs, cs);
         const as = this.world.atlasSize;
         gl.uniform3f(this.locations.u_atlasSize, as, as, as);
         gl.uniform1i(this.locations.u_brickSize, this.world.brickSize);
+
+        // Detail atlas parameters
+        const das = this.world.detailAtlasSize;
+        gl.uniform3f(this.locations.u_detailAtlasSize, das, das, das);
+        gl.uniform1i(this.locations.u_detailBrickSize, this.world.detailBrickSize);
         
         // Camera uniforms
         gl.uniform3fv(this.locations.u_cameraPos, camera.position);

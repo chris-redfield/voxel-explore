@@ -1083,6 +1083,7 @@ class SeaCaveGame {
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         const game = new SeaCaveGame('canvas');
+        window.game = game;  // Expose for debugging
         await game.init();
         game.run();
     } catch (err) {
@@ -1091,3 +1092,50 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('loading-text').style.color = '#ff6b6b';
     }
 });
+
+// Test function for detail voxels - run from console: testDetailVoxels()
+window.testDetailVoxels = function() {
+    const world = window.game.engine.world;
+    const engine = window.game.engine;
+    const player = window.game.player;
+
+    // Get player position
+    const px = Math.floor(player.x);
+    const py = Math.floor(player.y);
+    const pz = Math.floor(player.z);
+
+    // Find a solid voxel near player (search in front of them)
+    let testX, testY, testZ;
+    const forward = window.game.player.getForward3D();
+
+    for (let dist = 2; dist < 20; dist++) {
+        testX = Math.floor(px + forward[0] * dist);
+        testY = Math.floor(py + forward[1] * dist);
+        testZ = Math.floor(pz + forward[2] * dist);
+
+        const v = world.getVoxel(testX, testY, testZ);
+        if (v && v.a > 0) {
+            console.log(`Found solid voxel at (${testX}, ${testY}, ${testZ})`);
+            break;
+        }
+    }
+
+    // Create a 4x4x4 checkerboard detail pattern
+    console.log(`Creating detail voxel at (${testX}, ${testY}, ${testZ})`);
+    for (let sx = 0; sx < 4; sx++) {
+        for (let sy = 0; sy < 4; sy++) {
+            for (let sz = 0; sz < 4; sz++) {
+                if ((sx + sy + sz) % 2 === 0) {
+                    world.setDetailVoxel(testX, testY, testZ, sx, sy, sz, 255, 50, 200);
+                }
+            }
+        }
+    }
+
+    // Upload changes
+    const result = engine.uploadDirtyBricks();
+    console.log(`Uploaded: ${result.bricks} bricks, ${result.details} detail bricks`);
+    console.log(`Detail count: ${world.detailCount}`);
+
+    return { x: testX, y: testY, z: testZ };
+};
