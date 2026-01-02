@@ -22,6 +22,18 @@ class SeaCaveGame {
         this.frameCount = 0;
         this.lastFpsTime = performance.now();
 
+        // Coral catalog for underwater flora
+        // Each entry: { path, gridSize: {x, y, z} } - gridSize used to calculate Y offset
+        this.coralCatalog = [
+            { path: 'assets/coral1.json', gridSize: { x: 11, y: 20, z: 7 } },   // Generated branching coral
+            { path: 'assets/coral2.json', gridSize: { x: 8, y: 16, z: 6 } },    // Coral.obj
+            { path: 'assets/coral3.json', gridSize: { x: 11, y: 13, z: 16 } },  // Coral1.obj
+            { path: 'assets/coral4.json', gridSize: { x: 11, y: 16, z: 10 } },  // Coral2.obj
+            { path: 'assets/coral5.json', gridSize: { x: 15, y: 16, z: 14 } },  // Coral3.obj
+            { path: 'assets/coral6.json', gridSize: { x: 3, y: 16, z: 16 } },   // Coral4.obj
+            { path: 'assets/coral7.json', gridSize: { x: 6, y: 16, z: 8 } },    // Coral5.obj
+        ];
+
         this._setupInput();
     }
 
@@ -263,6 +275,34 @@ class SeaCaveGame {
 
         console.log(`Placing cabin at ground height: ${cabinGroundHeight}`);
         await this.loadVoxelModel('assets/cabin.json', cabinX, cabinY, cabinZ);
+
+        // ADD underwater flora / fauna
+        // For now, placing coral reefs near spawn on surface for quick iteration
+        progress(0.876, 'Adding coral reefs...', '');
+        await this._delay(10);
+
+        // Place one of each coral type in a row for testing
+        // Spread them out in front of spawn point
+        for (let i = 0; i < this.coralCatalog.length; i++) {
+            const coral = this.coralCatalog[i];
+            // Arrange in a semi-circle arc in front of spawn
+            const angle = (i / (this.coralCatalog.length - 1) - 0.5) * Math.PI * 0.6; // -54° to +54°
+            const distance = 18;
+            const dx = Math.sin(angle) * distance;
+            const dz = Math.cos(angle) * distance;
+
+            const coralX = this.worldOffset + dx;
+            const coralZ = this.worldOffset + dz;
+            const coralNoiseX = coralX - this.worldOffset;
+            const coralNoiseZ = coralZ - this.worldOffset;
+            const coralGroundHeight = this.terrain.getHeight(coralNoiseX, coralNoiseZ);
+            // Use gridSize.y / 2 as Y offset so coral sits on ground
+            const coralY = coralGroundHeight + Math.floor(coral.gridSize.y / 2);
+
+            // Note: rotation disabled for detail voxels (sub-voxels don't rotate properly yet)
+            console.log(`Placing coral ${i + 1} (${coral.path}) at (${coralX}, ${coralY}, ${coralZ})`);
+            await this.loadVoxelModel(coral.path, coralX, coralY, coralZ);
+        }
 
         const genTime = performance.now();
         progress(0.88, 'Uploading to GPU...', `Generation: ${((genTime - startTime)/1000).toFixed(1)}s`);
