@@ -430,6 +430,130 @@ def voxelize(triangles: List[Triangle], bbox: BoundingBox, resolution: int) -> L
     return result, (grid_x, grid_y, grid_z)
 
 
+def voxelize_detail(triangles: List[Triangle], bbox: BoundingBox, resolution: int) -> Tuple[List[dict], List[dict], tuple]:
+    """
+    Convert triangles to voxels with 4x4x4 sub-voxel detail.
+    Returns (regular_voxels, detail_voxels, grid_size).
+    """
+    print(f"Voxelizing with detail at base resolution {resolution} (sub-voxels at {resolution * 4})...")
+
+    DETAIL_SIZE = 4  # 4x4x4 sub-voxels per voxel
+
+    size = Vec3(
+        bbox.max_pt.x - bbox.min_pt.x,
+        bbox.max_pt.y - bbox.min_pt.y,
+        bbox.max_pt.z - bbox.min_pt.z
+    )
+
+    max_size = max(size.x, size.y, size.z)
+    base_voxel_size = max_size / resolution
+    sub_voxel_size = base_voxel_size / DETAIL_SIZE
+
+    grid_x = max(1, int(math.ceil(size.x / base_voxel_size)))
+    grid_y = max(1, int(math.ceil(size.y / base_voxel_size)))
+    grid_z = max(1, int(math.ceil(size.z / base_voxel_size)))
+
+    detail_grid_x = grid_x * DETAIL_SIZE
+    detail_grid_y = grid_y * DETAIL_SIZE
+    detail_grid_z = grid_z * DETAIL_SIZE
+
+    print(f"  Base grid size: {grid_x} x {grid_y} x {grid_z}")
+    print(f"  Detail grid size: {detail_grid_x} x {detail_grid_y} x {detail_grid_z}")
+
+    sub_voxels = {}
+    half_sub = sub_voxel_size / 2
+    box_half = Vec3(half_sub, half_sub, half_sub)
+
+    total = len(triangles)
+    for i, tri in enumerate(triangles):
+        if (i + 1) % 10000 == 0:
+            print(f"  Processing triangle {i + 1}/{total}...")
+
+        tri_min = Vec3(
+            min(tri.v0.x, tri.v1.x, tri.v2.x),
+            min(tri.v0.y, tri.v1.y, tri.v2.y),
+            min(tri.v0.z, tri.v1.z, tri.v2.z)
+        )
+        tri_max = Vec3(
+            max(tri.v0.x, tri.v1.x, tri.v2.x),
+            max(tri.v0.y, tri.v1.y, tri.v2.y),
+            max(tri.v0.z, tri.v1.z, tri.v2.z)
+        )
+
+        min_sx = max(0, int((tri_min.x - bbox.min_pt.x) / sub_voxel_size))
+        min_sy = max(0, int((tri_min.y - bbox.min_pt.y) / sub_voxel_size))
+        min_sz = max(0, int((tri_min.z - bbox.min_pt.z) / sub_voxel_size))
+        max_sx = min(detail_grid_x - 1, int((tri_max.x - bbox.min_pt.x) / sub_voxel_size))
+        max_sy = min(detail_grid_y - 1, int((tri_max.y - bbox.min_pt.y) / sub_voxel_size))
+        max_sz = min(detail_grid_z - 1, int((tri_max.z - bbox.min_pt.z) / sub_voxel_size))
+
+        for sx in range(min_sx, max_sx + 1):
+            for sy in range(min_sy, max_sy + 1):
+                for sz in range(min_sz, max_sz + 1):
+                    key = (sx, sy, sz)
+                    if key in sub_voxels:
+                        continue
+
+                    center = Vec3(
+                        bbox.min_pt.x + (sx + 0.5) * sub_voxel_size,
+                        bbox.min_pt.y + (sy + 0.5) * sub_voxel_size,
+                        bbox.min_pt.z + (sz + 0.5) * sub_voxel_size
+                    )
+
+                    if triangle_aabb_intersect(tri, center, box_half):
+                        sub_voxels[key] = tri.color
+
+    print(f"  Generated {len(sub_voxels)} sub-voxels")
+
+    # Group sub-voxels by parent voxel position
+    parent_voxels = {}
+    for (sx, sy, sz), color in sub_voxels.items():
+        vx = sx // DETAIL_SIZE
+        vy = sy // DETAIL_SIZE
+        vz = sz // DETAIL_SIZE
+        sub_x = sx % DETAIL_SIZE
+        sub_y = sy % DETAIL_SIZE
+        sub_z = sz % DETAIL_SIZE
+
+        parent_key = (vx, vy, vz)
+        if parent_key not in parent_voxels:
+            parent_voxels[parent_key] = {}
+        parent_voxels[parent_key][(sub_x, sub_y, sub_z)] = color
+
+    # Separate into regular voxels (fully filled same color) and detail voxels
+    regular_voxels = []
+    detail_voxels = []
+    TOTAL_SUB_VOXELS = DETAIL_SIZE ** 3
+
+    for (vx, vy, vz), sub_data in parent_voxels.items():
+        if len(sub_data) == TOTAL_SUB_VOXELS:
+            colors = list(sub_data.values())
+            first_color = colors[0]
+            if all(c == first_color for c in colors):
+                regular_voxels.append({
+                    'x': vx, 'y': vy, 'z': vz,
+                    'r': first_color[0], 'g': first_color[1], 'b': first_color[2]
+                })
+                continue
+
+        # Partial fill or mixed colors - use detail voxels
+        sub_list = []
+        for (sub_x, sub_y, sub_z), (r, g, b) in sub_data.items():
+            sub_list.append({
+                'sx': sub_x, 'sy': sub_y, 'sz': sub_z,
+                'r': r, 'g': g, 'b': b
+            })
+        detail_voxels.append({
+            'x': vx, 'y': vy, 'z': vz,
+            'subVoxels': sub_list
+        })
+
+    print(f"  Regular voxels (fully solid): {len(regular_voxels)}")
+    print(f"  Detail voxels (with sub-voxels): {len(detail_voxels)}")
+
+    return regular_voxels, detail_voxels, (grid_x, grid_y, grid_z)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Convert OBJ models to voxels')
     parser.add_argument('input', help='Input OBJ file')
@@ -448,6 +572,8 @@ def main():
                         help='Rotate model around Y axis in degrees')
     parser.add_argument('--hollow', action='store_true',
                         help='Make model hollow (remove interior voxels)')
+    parser.add_argument('--detail', action='store_true',
+                        help='Generate detail voxels with 4x4x4 sub-voxels for higher resolution')
 
     args = parser.parse_args()
 
@@ -494,11 +620,16 @@ def main():
             Vec3(max(v.x for v in all_verts), max(v.y for v in all_verts), max(v.z for v in all_verts))
         )
 
-    # Voxelize
-    voxels, grid_size = voxelize(triangles, bbox, args.resolution)
+    # Voxelize (with or without detail)
+    if args.detail:
+        regular_voxels, detail_voxels, grid_size = voxelize_detail(triangles, bbox, args.resolution)
+        voxels = regular_voxels
+    else:
+        voxels, grid_size = voxelize(triangles, bbox, args.resolution)
+        detail_voxels = []
 
-    # Hollow out interior if requested
-    if args.hollow:
+    # Hollow out interior if requested (only for non-detail mode)
+    if args.hollow and not args.detail:
         voxel_dict = {(v['x'], v['y'], v['z']): (v['r'], v['g'], v['b']) for v in voxels}
         voxel_dict = hollow_out(voxel_dict, grid_size)
         voxels = [{'x': x, 'y': y, 'z': z, 'r': r, 'g': g, 'b': b}
@@ -510,6 +641,9 @@ def main():
         print(f"Overriding color to RGB({r}, {g}, {b})")
         for v in voxels:
             v['r'], v['g'], v['b'] = r, g, b
+        for dv in detail_voxels:
+            for sv in dv['subVoxels']:
+                sv['r'], sv['g'], sv['b'] = r, g, b
 
     # Save output
     print(f"Saving to {output_path}...")
@@ -520,6 +654,11 @@ def main():
         'voxelCount': len(voxels),
         'voxels': voxels
     }
+
+    if args.detail:
+        output_data['hasDetail'] = True
+        output_data['detailVoxelCount'] = len(detail_voxels)
+        output_data['detailVoxels'] = detail_voxels
 
     if args.compact:
         # Compact format: [[x, y, z, r, g, b], ...]
@@ -532,7 +671,11 @@ def main():
     print(f"Done! Output: {output_path} ({file_size / 1024:.1f} KB)")
     print(f"\nTo use in your voxel engine:")
     print(f"  1. Load the JSON file")
-    print(f"  2. For each voxel: world.setVoxel(x + offsetX, y + offsetY, z + offsetZ, r, g, b)")
+    if args.detail:
+        print(f"  2. For each voxel: world.setVoxel(x + offsetX, y + offsetY, z + offsetZ, r, g, b)")
+        print(f"  3. For each detailVoxel: world.setDetailVoxel(x + offsetX, y + offsetY, z + offsetZ, sx, sy, sz, r, g, b)")
+    else:
+        print(f"  2. For each voxel: world.setVoxel(x + offsetX, y + offsetY, z + offsetZ, r, g, b)")
 
 
 if __name__ == '__main__':

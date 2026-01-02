@@ -413,7 +413,55 @@ class SeaCaveGame {
             }
 
             console.log(`  Placed ${placed} voxels`);
-            return { placed, gridSize: data.gridSize };
+
+            // Handle detail voxels if present
+            let detailPlaced = 0;
+            if (data.hasDetail && data.detailVoxels) {
+                console.log(`  Loading ${data.detailVoxels.length} detail voxels...`);
+
+                for (const dv of data.detailVoxels) {
+                    // Center the parent voxel coordinates
+                    let lx = dv.x - centerX;
+                    let ly = dv.y - centerY;
+                    let lz = dv.z - centerZ;
+
+                    // Apply rotations (same as regular voxels)
+                    if (tiltAngle !== 0) {
+                        const newLx = lx * cosT - ly * sinT;
+                        const newLy = lx * sinT + ly * cosT;
+                        lx = newLx;
+                        ly = newLy;
+                    }
+                    if (yawAngle !== 0) {
+                        const newLx = lx * cosY + lz * sinY;
+                        const newLz = -lx * sinY + lz * cosY;
+                        lx = newLx;
+                        lz = newLz;
+                    }
+                    if (pitchAngle !== 0) {
+                        const newLy = ly * cosP - lz * sinP;
+                        const newLz = ly * sinP + lz * cosP;
+                        ly = newLy;
+                        lz = newLz;
+                    }
+
+                    const wx = Math.floor(offsetX + lx * scale);
+                    const wy = Math.floor(offsetY + ly * scale);
+                    const wz = Math.floor(offsetZ + lz * scale);
+
+                    if (wx >= 0 && wx < world.worldSize &&
+                        wy >= 0 && wy < world.worldSize &&
+                        wz >= 0 && wz < world.worldSize) {
+                        for (const sv of dv.subVoxels) {
+                            world.setDetailVoxel(wx, wy, wz, sv.sx, sv.sy, sv.sz, sv.r, sv.g, sv.b);
+                            detailPlaced++;
+                        }
+                    }
+                }
+                console.log(`  Placed ${detailPlaced} sub-voxels in ${data.detailVoxels.length} detail voxels`);
+            }
+
+            return { placed, detailPlaced, gridSize: data.gridSize };
         } catch (e) {
             console.error(`Failed to load voxel model: ${e}`);
             return null;
