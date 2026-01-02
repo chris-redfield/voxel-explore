@@ -168,9 +168,65 @@ python voxelize.py model.obj -r 32 --rotate-y 90 -o model.json
 | `--color R,G,B` | Override all voxel colors |
 | `--rotate-y DEGREES` | Rotate model around Y axis |
 | `--hollow` | Remove interior voxels (keep only shell) |
+| `--detail` | Generate 4x4x4 sub-voxels for higher resolution |
 | `--compact` | Output compact array format |
 
 ## Technical Details
+
+### Detail Voxels (Sub-Voxels)
+
+The `--detail` flag enables 4x4x4 sub-voxel rendering for higher resolution models. This divides each voxel into 64 smaller sub-voxels, allowing for finer detail on edges and curves.
+
+```bash
+# Generate model with sub-voxel detail
+python voxelize.py coral.obj -r 32 --detail -o coral.json
+```
+
+**How it works:**
+- Base resolution is divided into 4x4x4 sub-voxels (e.g., resolution 32 → 128 effective resolution)
+- Voxels that are fully solid with uniform color are stored as regular voxels
+- Voxels with partial fill or mixed colors store individual sub-voxel data
+
+**Output format with detail:**
+```json
+{
+  "resolution": 32,
+  "gridSize": { "x": 28, "y": 40, "z": 29 },
+  "hasDetail": true,
+  "voxelCount": 1500,
+  "voxels": [
+    { "x": 0, "y": 0, "z": 0, "r": 255, "g": 100, "b": 80 }
+  ],
+  "detailVoxelCount": 350,
+  "detailVoxels": [
+    {
+      "x": 5, "y": 10, "z": 3,
+      "subVoxels": [
+        { "sx": 0, "sy": 0, "sz": 0, "r": 255, "g": 100, "b": 80 },
+        { "sx": 1, "sy": 0, "sz": 0, "r": 250, "g": 95, "b": 75 }
+      ]
+    }
+  ]
+}
+```
+
+**Loading detail voxels in game:**
+```javascript
+// Load regular voxels
+for (const v of data.voxels) {
+    world.setVoxel(x + v.x, y + v.y, z + v.z, v.r, v.g, v.b);
+}
+
+// Load detail voxels with sub-voxel data
+if (data.hasDetail) {
+    for (const dv of data.detailVoxels) {
+        for (const sv of dv.subVoxels) {
+            world.setSubVoxel(x + dv.x, y + dv.y, z + dv.z,
+                              sv.sx, sv.sy, sv.sz, sv.r, sv.g, sv.b);
+        }
+    }
+}
+```
 
 ### Voxel Colors
 Voxels are stored as RGBA where:
@@ -343,3 +399,18 @@ python -m http.server 8000
 
 ### Browser Requirements
 - WebGL2 support (Chrome, Firefox, Edge, Safari 15+)
+
+## TODO
+
+### Detail Voxel Rotation
+Currently, `loadVoxelModel()` does not properly rotate detail voxels. When a model with sub-voxels is rotated, only the parent voxel position is rotated - the 4x4x4 sub-voxels inside remain in their original local positions, causing visual glitches.
+
+**To fix:** When rotating a detail voxel, also rotate each sub-voxel's `(sx, sy, sz)` coordinates within the parent cell:
+```javascript
+// Example: 90° rotation around Y axis for sub-voxels
+// sx' = 3 - sz
+// sz' = sx
+// sy stays the same
+```
+
+This requires mapping sub-voxel coordinates through the same rotation matrix applied to the parent voxel.
