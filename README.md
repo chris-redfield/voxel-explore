@@ -21,6 +21,7 @@ An underwater exploration game featuring:
 - **Pirate Ship** - A sunken ship resting on the seafloor
 - **Ancient Stonegate** - Mysterious ruins near the ship
 - **Roman Poles** - Ancient columns, one standing upright, one fallen
+- **Coral Reefs** - Colorful coral scattered across the ocean floor, rendered with sub-voxel detail
 
 ### Floating Asteroid Cave (`cave-level.html`)
 A floating cave in the sky with:
@@ -85,9 +86,12 @@ voxel-explore/
 │   ├── lighthouse.json        # Striped lighthouse
 │   ├── lighthouse_stairs.json # Spiral staircase
 │   ├── stonegate.json         # Ancient ruins
-│   └── roman-pole.json        # Roman column
+│   ├── roman-pole.json        # Roman column
+│   ├── coral1-7.json          # Coral reef models (detail voxels)
+│   └── coral/                 # Source OBJ files for corals
 ├── utils/                     # Asset creation utilities
 │   ├── voxelize.py            # OBJ to voxel converter
+│   ├── generate_coral.py      # Procedural branching coral generator
 │   ├── generate_spiral_stairs.py
 │   └── stripe_lighthouse.py
 └── README.md
@@ -171,6 +175,36 @@ python voxelize.py model.obj -r 32 --rotate-y 90 -o model.json
 | `--detail` | Generate 4x4x4 sub-voxels for higher resolution |
 | `--compact` | Output compact array format |
 
+### Procedural Coral Generator (`utils/generate_coral.py`)
+Generates branching coral OBJ models for voxelization.
+
+```bash
+# Generate coral with default settings
+python generate_coral.py -o coral.obj
+
+# Customize coral shape
+python generate_coral.py -o coral.obj -b 8 --height 1.5 -d 4 -r 0.02 -s 123
+```
+
+#### Options
+| Option | Description |
+|--------|-------------|
+| `-o, --output` | Output OBJ file path |
+| `-b, --branches` | Number of main branches (default: 6) |
+| `--height` | Coral height in units (default: 3.5) |
+| `-d, --depth` | Max branching depth (default: 4) |
+| `-r, --radius` | Base branch radius (default: 0.12) |
+| `-s, --seed` | Random seed for reproducibility |
+
+#### Workflow
+```bash
+# 1. Generate coral mesh
+python generate_coral.py -o ../assets/coral.obj -b 7 --height 1.0 -d 4 -r 0.02
+
+# 2. Voxelize with detail for sub-voxel rendering
+python voxelize.py ../assets/coral.obj -r 20 --detail -o ../assets/coral.json
+```
+
 ## Technical Details
 
 ### Detail Voxels (Sub-Voxels)
@@ -243,7 +277,30 @@ The engine renders only the top face of water voxels for a flat surface effect.
 ### Memory Usage
 - Coarse grid: `coarseSize^3 x 4 bytes`
 - Per brick: `8^3 x 4 = 2KB`
+- Detail atlas: `detailAtlasSize^3` detail bricks max (default 48³ = 110,592)
 - Only occupied regions allocate memory (sparse storage)
+
+### Coral Reef System
+Corals are placed randomly across the ocean floor using an optimized cached placement system.
+
+**Coral Catalog** (`game.js`):
+```javascript
+this.coralCatalog = [
+    { path: 'assets/coral1.json', gridSize: { x: 11, y: 20, z: 7 } },
+    { path: 'assets/coral3.json', gridSize: { x: 11, y: 13, z: 16 }, noRotate: true },
+    // ... more corals
+];
+```
+
+**Optimizations:**
+- **JSON Caching**: Each coral JSON is loaded once via `preloadCorals()`, then reused for all placements
+- **90° Rotation**: Corals are randomly rotated in 90° increments (0°, 90°, 180°, 270°) with proper sub-voxel coordinate transformation
+- **noRotate flag**: Models with asymmetric grids can disable rotation to prevent glitches
+
+**Placement** (`placeCoralCached()`):
+- Synchronous placement from cached data (no async overhead)
+- Supports 90° Y-axis rotations with sub-voxel coordinate mapping
+- Only places corals underwater (below sea level)
 
 ### Voxel Model Format
 Models are stored as JSON with the following structure:
@@ -402,15 +459,18 @@ python -m http.server 8000
 
 ## TODO
 
-### Detail Voxel Rotation
-Currently, `loadVoxelModel()` does not properly rotate detail voxels. When a model with sub-voxels is rotated, only the parent voxel position is rotated - the 4x4x4 sub-voxels inside remain in their original local positions, causing visual glitches.
+### Detail Voxel Rotation - Asymmetric Grids
+The `placeCoralCached()` function now supports 90° rotation increments (0°, 90°, 180°, 270°) with proper sub-voxel coordinate transformation. However, models with highly asymmetric grid dimensions (e.g., coral3 with gridSize 11x13x16) may cause visual glitches when rotated.
 
-**To fix:** When rotating a detail voxel, also rotate each sub-voxel's `(sx, sy, sz)` coordinates within the parent cell:
+**Current workaround:** The coral catalog supports a `noRotate: true` flag for problematic models:
 ```javascript
-// Example: 90° rotation around Y axis for sub-voxels
-// sx' = 3 - sz
-// sz' = sx
-// sy stays the same
+this.coralCatalog = [
+    { path: 'assets/coral1.json', gridSize: { x: 11, y: 20, z: 7 } },
+    { path: 'assets/coral3.json', gridSize: { x: 11, y: 13, z: 16 }, noRotate: true },  // Asymmetric - don't rotate
+    // ...
+];
 ```
 
-This requires mapping sub-voxel coordinates through the same rotation matrix applied to the parent voxel.
+**Known issue:** `coral3.json` has rotation disabled due to asymmetric X/Z dimensions causing placement glitches.
+
+**To fully fix:** The rotation logic needs to account for grid dimension swapping when rotating 90°/270° - after rotation, a model's effective X and Z dimensions swap, affecting center calculations.
