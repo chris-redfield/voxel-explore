@@ -3,6 +3,192 @@
 // Depends on: config.js, cache.js, generators/island.js, generators/cave.js, player.js
 // ============================================================
 
+// ============================================================
+// Mining Debris System - Scattered subvoxels with physics
+// ============================================================
+class MiningDebris {
+    constructor() {
+        this.particles = [];  // Array of debris particles
+    }
+
+    // Create debris from a destroyed voxel
+    // Spawns 4x4x4 = 64 small particles that scatter and fall
+    spawnFromVoxel(x, y, z, color) {
+        const subSize = 0.25;  // Each subvoxel is 1/4 of a voxel
+
+        for (let sx = 0; sx < 4; sx++) {
+            for (let sy = 0; sy < 4; sy++) {
+                for (let sz = 0; sz < 4; sz++) {
+                    // Position at center of each subvoxel
+                    const px = x + sx * subSize + subSize / 2;
+                    const py = y + sy * subSize + subSize / 2;
+                    const pz = z + sz * subSize + subSize / 2;
+
+                    // Random velocity - scatter outward with some upward bias initially
+                    const spreadForce = 3;
+                    const vx = (Math.random() - 0.5) * spreadForce;
+                    const vy = Math.random() * spreadForce * 0.5 + 1;  // Slight upward pop
+                    const vz = (Math.random() - 0.5) * spreadForce;
+
+                    // Slight color variation for visual interest
+                    const colorVar = 0.9 + Math.random() * 0.2;
+
+                    this.particles.push({
+                        x: px, y: py, z: pz,
+                        vx: vx, vy: vy, vz: vz,
+                        r: Math.min(255, Math.floor(color.r * colorVar)),
+                        g: Math.min(255, Math.floor(color.g * colorVar)),
+                        b: Math.min(255, Math.floor(color.b * colorVar)),
+                        size: subSize,
+                        life: 3.0 + Math.random() * 2.0,  // 3-5 seconds lifetime
+                        onGround: false
+                    });
+                }
+            }
+        }
+    }
+
+    // Update all particles with physics
+    update(dt, world) {
+        const gravity = 20;
+        const friction = 0.98;
+        const groundFriction = 0.7;
+        const bounceRestitution = 0.3;
+
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+
+            // Reduce lifetime
+            p.life -= dt;
+            if (p.life <= 0) {
+                this.particles.splice(i, 1);
+                continue;
+            }
+
+            // Always apply gravity (even on ground, to keep it pressed down)
+            if (!p.onGround) {
+                p.vy -= gravity * dt;
+                // Terminal velocity
+                p.vy = Math.max(p.vy, -20);
+            }
+
+            // Apply friction
+            p.vx *= p.onGround ? groundFriction : friction;
+            p.vz *= p.onGround ? groundFriction : friction;
+
+            // Calculate new position
+            const newX = p.x + p.vx * dt;
+            const newY = p.y + p.vy * dt;
+            const newZ = p.z + p.vz * dt;
+
+            // Check collision - look at voxel BELOW the particle's new position
+            const checkY = Math.floor(newY - 0.01);  // Slightly below particle center
+            const voxelBelow = world.getVoxel(Math.floor(newX), checkY, Math.floor(newZ));
+
+            // Only collide with solid non-water voxels (and ignore detail markers a=255)
+            const isSolid = voxelBelow && voxelBelow.a > 0 && voxelBelow.a < 255 && !this._isWaterVoxel(voxelBelow);
+
+            if (isSolid && p.vy < 0) {
+                // Hit ground from above - bounce or settle
+                const groundY = checkY + 1;  // Top of the solid voxel
+                if (Math.abs(p.vy) > 2) {
+                    p.vy = -p.vy * bounceRestitution;
+                    p.y = groundY + 0.01;
+                } else {
+                    p.onGround = true;
+                    p.y = groundY + 0.01;
+                    p.vy = 0;
+                }
+                p.x = newX;
+                p.z = newZ;
+            } else {
+                // No collision, move freely
+                p.x = newX;
+                p.y = newY;
+                p.z = newZ;
+
+                // Check if we left the ground
+                if (p.onGround && !isSolid) {
+                    p.onGround = false;
+                }
+            }
+
+            // Remove if fallen below world
+            if (p.y < 0) {
+                this.particles.splice(i, 1);
+            }
+        }
+    }
+
+    _isWaterVoxel(v) {
+        return v.r >= 25 && v.r <= 40 &&
+               v.g >= 80 && v.g <= 100 &&
+               v.b >= 160 && v.b <= 180;
+    }
+
+    // Render debris as detail voxels in the world (temporary)
+    // Returns array of positions that need to be cleared next frame
+    renderToWorld(world) {
+        const positions = [];
+
+        for (const p of this.particles) {
+            // Only render if alive and visible
+            if (p.life <= 0) continue;
+
+            const wx = Math.floor(p.x);
+            const wy = Math.floor(p.y);
+            const wz = Math.floor(p.z);
+
+            // Check bounds
+            if (wx < 0 || wx >= world.worldSize ||
+                wy < 0 || wy >= world.worldSize ||
+                wz < 0 || wz >= world.worldSize) {
+                continue;
+            }
+
+            // Get existing voxel - don't overwrite solid voxels
+            const existing = world.getVoxel(wx, wy, wz);
+            if (existing && existing.a > 0 && existing.a < 255) {
+                continue;  // Don't render inside solid voxels
+            }
+
+            // Calculate sub-voxel position within the voxel
+            const sx = Math.floor((p.x - wx) * 4);
+            const sy = Math.floor((p.y - wy) * 4);
+            const sz = Math.floor((p.z - wz) * 4);
+
+            // Clamp to valid range
+            const csx = Math.max(0, Math.min(3, sx));
+            const csy = Math.max(0, Math.min(3, sy));
+            const csz = Math.max(0, Math.min(3, sz));
+
+            // Fade out near end of life
+            const alpha = p.life < 1.0 ? p.life : 1.0;
+            if (alpha < 0.3) continue;  // Don't render very faded particles
+
+            // Set the detail voxel
+            world.setDetailVoxel(wx, wy, wz, csx, csy, csz, p.r, p.g, p.b);
+            positions.push({ x: wx, y: wy, z: wz, sx: csx, sy: csy, sz: csz });
+        }
+
+        return positions;
+    }
+
+    // Clear previously rendered debris positions
+    clearFromWorld(world, positions) {
+        for (const pos of positions) {
+            world.clearDetailVoxel(pos.x, pos.y, pos.z, pos.sx, pos.sy, pos.sz);
+        }
+    }
+
+    getParticleCount() {
+        return this.particles.length;
+    }
+}
+
+// ============================================================
+// SeaCaveGame Class
+// ============================================================
 class SeaCaveGame {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
@@ -37,6 +223,10 @@ class SeaCaveGame {
         // Cache for loaded coral JSON data (optimization for repeated placements)
         this.coralCache = {};
 
+        // Mining debris system
+        this.miningDebris = new MiningDebris();
+        this.lastDebrisPositions = [];  // Track rendered debris for cleanup
+
         this._setupInput();
     }
 
@@ -54,11 +244,30 @@ class SeaCaveGame {
             if (e.code === 'KeyL') {
                 this._toggleFlashlight();
             }
+            // Tool switching: 0 = no tool, 1 = mining tool
+            if (e.code === 'Digit0') {
+                this.player.equipTool(TOOL_NONE);
+                this._updateToolDisplay();
+            }
+            if (e.code === 'Digit1') {
+                this.player.equipTool(TOOL_MINING);
+                this._updateToolDisplay();
+            }
             if (e.code === 'Escape' && this.isLocked) document.exitPointerLock();
         });
         window.addEventListener('keyup', e => this.keys[e.code] = false);
-        this.canvas.addEventListener('click', () => {
-            if (!this.isLocked) this.canvas.requestPointerLock();
+
+        // Mouse click for mining
+        this.canvas.addEventListener('mousedown', (e) => {
+            if (!this.isLocked) {
+                this.canvas.requestPointerLock();
+                return;
+            }
+
+            // Left click with mining tool equipped = mine
+            if (e.button === 0 && this.player.getEquippedTool() === TOOL_MINING) {
+                this._attemptMine();
+            }
         });
         document.addEventListener('pointerlockchange', () => {
             this.isLocked = document.pointerLockElement === this.canvas;
@@ -88,6 +297,128 @@ class SeaCaveGame {
         toggle.checked = !toggle.checked;
         this.engine.settings.lanternEnabled = toggle.checked;
         this._updateFlashlightIcon(toggle.checked);
+    }
+
+    _updateToolDisplay() {
+        const toolDisplay = document.getElementById('tool-display');
+        if (toolDisplay) {
+            const tool = this.player.getEquippedTool();
+            if (tool === TOOL_NONE) {
+                toolDisplay.textContent = 'None';
+            } else if (tool === TOOL_MINING) {
+                toolDisplay.textContent = 'Mining Tool';
+            }
+        }
+    }
+
+    // CPU-side DDA raycast to find which voxel the player is looking at
+    _raycastVoxel(maxDistance = 10) {
+        const world = this.engine.world;
+        const [ex, ey, ez] = this.player.getEyePos();
+        const [dx, dy, dz] = this.player.getForward3D();
+
+        // Start position
+        let x = ex, y = ey, z = ez;
+
+        // Integer voxel position
+        let mapX = Math.floor(x);
+        let mapY = Math.floor(y);
+        let mapZ = Math.floor(z);
+
+        // Step direction
+        const stepX = dx >= 0 ? 1 : -1;
+        const stepY = dy >= 0 ? 1 : -1;
+        const stepZ = dz >= 0 ? 1 : -1;
+
+        // Delta distance (how far along ray to cross one voxel)
+        const deltaDist = (d) => d === 0 ? Infinity : Math.abs(1 / d);
+        const deltaDistX = deltaDist(dx);
+        const deltaDistY = deltaDist(dy);
+        const deltaDistZ = deltaDist(dz);
+
+        // Initial side distances
+        let sideDistX = dx >= 0 ? (mapX + 1 - x) * deltaDistX : (x - mapX) * deltaDistX;
+        let sideDistY = dy >= 0 ? (mapY + 1 - y) * deltaDistY : (y - mapY) * deltaDistY;
+        let sideDistZ = dz >= 0 ? (mapZ + 1 - z) * deltaDistZ : (z - mapZ) * deltaDistZ;
+
+        let distance = 0;
+        let side = 0;  // 0 = X, 1 = Y, 2 = Z
+
+        // DDA loop
+        while (distance < maxDistance) {
+            // Check current voxel
+            const voxel = world.getVoxel(mapX, mapY, mapZ);
+            if (voxel && voxel.a > 0) {
+                // Skip water voxels
+                if (!this._isWaterVoxel(voxel)) {
+                    // Calculate normal based on entry side
+                    let nx = 0, ny = 0, nz = 0;
+                    if (side === 0) nx = -stepX;
+                    else if (side === 1) ny = -stepY;
+                    else nz = -stepZ;
+
+                    return {
+                        hit: true,
+                        x: mapX,
+                        y: mapY,
+                        z: mapZ,
+                        normal: { x: nx, y: ny, z: nz },
+                        distance: distance,
+                        color: { r: voxel.r, g: voxel.g, b: voxel.b }
+                    };
+                }
+            }
+
+            // Step to next voxel
+            if (sideDistX < sideDistY) {
+                if (sideDistX < sideDistZ) {
+                    distance = sideDistX;
+                    sideDistX += deltaDistX;
+                    mapX += stepX;
+                    side = 0;
+                } else {
+                    distance = sideDistZ;
+                    sideDistZ += deltaDistZ;
+                    mapZ += stepZ;
+                    side = 2;
+                }
+            } else {
+                if (sideDistY < sideDistZ) {
+                    distance = sideDistY;
+                    sideDistY += deltaDistY;
+                    mapY += stepY;
+                    side = 1;
+                } else {
+                    distance = sideDistZ;
+                    sideDistZ += deltaDistZ;
+                    mapZ += stepZ;
+                    side = 2;
+                }
+            }
+        }
+
+        return { hit: false };
+    }
+
+    // Attempt to mine the voxel the player is looking at
+    _attemptMine() {
+        const hit = this._raycastVoxel(8);  // 8 block reach
+
+        if (!hit.hit) {
+            console.log('No voxel in range');
+            return;
+        }
+
+        console.log(`Mining voxel at (${hit.x}, ${hit.y}, ${hit.z})`);
+
+        // Spawn debris particles before destroying the voxel
+        this.miningDebris.spawnFromVoxel(hit.x, hit.y, hit.z, hit.color);
+
+        // Destroy the voxel
+        this.engine.world.setVoxel(hit.x, hit.y, hit.z, 0, 0, 0, 0);
+
+        // Immediately upload the change to GPU
+        this.engine.uploadDirtyBricks();
     }
 
     _updateFlashlightIcon(enabled) {
@@ -1319,6 +1650,10 @@ class SeaCaveGame {
             lastTime = now;
 
             this._updatePlayer(dt);
+
+            // Update mining debris physics
+            this._updateMiningDebris(dt);
+
             this.engine.render();
             this._updateStats();
 
@@ -1326,6 +1661,18 @@ class SeaCaveGame {
         };
 
         loop();
+    }
+
+    // Update mining debris particles
+    _updateMiningDebris(dt) {
+        if (this.miningDebris.getParticleCount() === 0) {
+            return;  // Nothing to update
+        }
+
+        // Update physics only - no world rendering for now
+        // (Rendering debris as detail voxels is expensive and causes collision issues)
+        // TODO: Add proper particle rendering system (billboards or instanced cubes)
+        this.miningDebris.update(dt, this.engine.world);
     }
 }
 

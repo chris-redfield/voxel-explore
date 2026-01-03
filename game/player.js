@@ -3,6 +3,10 @@
 // Depends on: config.js (SEA_LEVEL, WALK_SPEED, SPRINT_SPEED, SWIM_SPEED, FAST_SWIM_SPEED)
 // ============================================================
 
+// Tool types
+const TOOL_NONE = 0;
+const TOOL_MINING = 1;
+
 class Diver {
     constructor() {
         this.x = 0; this.y = 50; this.z = 0;
@@ -25,6 +29,17 @@ class Diver {
         this.isUnderwater = false;
         this.wasUnderwater = false;  // For hysteresis
         this.depth = 0;  // Depth below sea level
+
+        // Tool system
+        this.equippedTool = TOOL_NONE;  // 0 = none, 1 = mining tool
+    }
+
+    equipTool(toolId) {
+        this.equippedTool = toolId;
+    }
+
+    getEquippedTool() {
+        return this.equippedTool;
     }
 
     setSpawn(x, y, z) { this.spawnX = x; this.spawnY = y; this.spawnZ = z; }
