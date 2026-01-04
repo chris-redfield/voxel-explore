@@ -12,39 +12,39 @@ class MiningDebris {
     }
 
     // Create debris from a destroyed voxel
-    // Spawns 4x4x4 = 64 small particles that scatter and fall
+    // Spawns 8 particles for performance (64 max / 8 = 8 simultaneous voxels)
     spawnFromVoxel(x, y, z, color) {
-        const subSize = 0.25;  // Each subvoxel is 1/4 of a voxel
+        // Spawn particles at 8 corners of the voxel
+        const positions = [
+            [0.25, 0.25, 0.25], [0.75, 0.25, 0.25],
+            [0.25, 0.75, 0.25], [0.75, 0.75, 0.25],
+            [0.25, 0.25, 0.75], [0.75, 0.25, 0.75],
+            [0.25, 0.75, 0.75], [0.75, 0.75, 0.75]
+        ];
 
-        for (let sx = 0; sx < 4; sx++) {
-            for (let sy = 0; sy < 4; sy++) {
-                for (let sz = 0; sz < 4; sz++) {
-                    // Position at center of each subvoxel
-                    const px = x + sx * subSize + subSize / 2;
-                    const py = y + sy * subSize + subSize / 2;
-                    const pz = z + sz * subSize + subSize / 2;
+        for (const [ox, oy, oz] of positions) {
+            const px = x + ox;
+            const py = y + oy;
+            const pz = z + oz;
 
-                    // Random velocity - scatter outward with some upward bias initially
-                    const spreadForce = 3;
-                    const vx = (Math.random() - 0.5) * spreadForce;
-                    const vy = Math.random() * spreadForce * 0.5 + 1;  // Slight upward pop
-                    const vz = (Math.random() - 0.5) * spreadForce;
+            // Random velocity - scatter outward with slight upward pop
+            const spreadForce = 4;
+            const vx = (Math.random() - 0.5) * spreadForce;
+            const vy = Math.random() * 2 + 1;  // Slight upward pop
+            const vz = (Math.random() - 0.5) * spreadForce;
 
-                    // Slight color variation for visual interest
-                    const colorVar = 0.9 + Math.random() * 0.2;
+            // Slight color variation for visual interest
+            const colorVar = 0.85 + Math.random() * 0.3;
 
-                    this.particles.push({
-                        x: px, y: py, z: pz,
-                        vx: vx, vy: vy, vz: vz,
-                        r: Math.min(255, Math.floor(color.r * colorVar)),
-                        g: Math.min(255, Math.floor(color.g * colorVar)),
-                        b: Math.min(255, Math.floor(color.b * colorVar)),
-                        size: subSize,
-                        life: 3.0 + Math.random() * 2.0,  // 3-5 seconds lifetime
-                        onGround: false
-                    });
-                }
-            }
+            this.particles.push({
+                x: px, y: py, z: pz,
+                vx: vx, vy: vy, vz: vz,
+                r: Math.min(255, Math.floor(color.r * colorVar)),
+                g: Math.min(255, Math.floor(color.g * colorVar)),
+                b: Math.min(255, Math.floor(color.b * colorVar)),
+                life: 1.5 + Math.random() * 0.5,  // 1.5-2 seconds lifetime
+                onGround: false
+            });
         }
     }
 
@@ -126,59 +126,21 @@ class MiningDebris {
                v.b >= 160 && v.b <= 180;
     }
 
-    // Render debris as detail voxels in the world (temporary)
-    // Returns array of positions that need to be cleared next frame
-    renderToWorld(world) {
-        const positions = [];
-
+    // Get particles for GPU rendering (no voxel world modification)
+    getParticlesForGPU() {
+        const result = [];
         for (const p of this.particles) {
-            // Only render if alive and visible
-            if (p.life <= 0) continue;
-
-            const wx = Math.floor(p.x);
-            const wy = Math.floor(p.y);
-            const wz = Math.floor(p.z);
-
-            // Check bounds
-            if (wx < 0 || wx >= world.worldSize ||
-                wy < 0 || wy >= world.worldSize ||
-                wz < 0 || wz >= world.worldSize) {
-                continue;
-            }
-
-            // Get existing voxel - don't overwrite solid voxels
-            const existing = world.getVoxel(wx, wy, wz);
-            if (existing && existing.a > 0 && existing.a < 255) {
-                continue;  // Don't render inside solid voxels
-            }
-
-            // Calculate sub-voxel position within the voxel
-            const sx = Math.floor((p.x - wx) * 4);
-            const sy = Math.floor((p.y - wy) * 4);
-            const sz = Math.floor((p.z - wz) * 4);
-
-            // Clamp to valid range
-            const csx = Math.max(0, Math.min(3, sx));
-            const csy = Math.max(0, Math.min(3, sy));
-            const csz = Math.max(0, Math.min(3, sz));
-
-            // Fade out near end of life
-            const alpha = p.life < 1.0 ? p.life : 1.0;
-            if (alpha < 0.3) continue;  // Don't render very faded particles
-
-            // Set the detail voxel
-            world.setDetailVoxel(wx, wy, wz, csx, csy, csz, p.r, p.g, p.b);
-            positions.push({ x: wx, y: wy, z: wz, sx: csx, sy: csy, sz: csz });
+            if (p.life <= 0 || p.life < 0.2) continue;
+            result.push({
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                r: p.r,
+                g: p.g,
+                b: p.b
+            });
         }
-
-        return positions;
-    }
-
-    // Clear previously rendered debris positions
-    clearFromWorld(world, positions) {
-        for (const pos of positions) {
-            world.clearDetailVoxel(pos.x, pos.y, pos.z, pos.sx, pos.sy, pos.sz);
-        }
+        return result;
     }
 
     getParticleCount() {
@@ -223,9 +185,8 @@ class SeaCaveGame {
         // Cache for loaded coral JSON data (optimization for repeated placements)
         this.coralCache = {};
 
-        // Mining debris system
+        // Mining debris system (GPU-rendered, no voxel world modification)
         this.miningDebris = new MiningDebris();
-        this.lastDebrisPositions = [];  // Track rendered debris for cleanup
 
         this._setupInput();
     }
@@ -1665,14 +1626,11 @@ class SeaCaveGame {
 
     // Update mining debris particles
     _updateMiningDebris(dt) {
-        if (this.miningDebris.getParticleCount() === 0) {
-            return;  // Nothing to update
-        }
-
-        // Update physics only - no world rendering for now
-        // (Rendering debris as detail voxels is expensive and causes collision issues)
-        // TODO: Add proper particle rendering system (billboards or instanced cubes)
+        // Update physics (even if no particles, to clear GPU list)
         this.miningDebris.update(dt, this.engine.world);
+
+        // Pass particles to GPU for rendering (no voxel world modification!)
+        this.engine.settings.debrisParticles = this.miningDebris.getParticlesForGPU();
     }
 }
 

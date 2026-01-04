@@ -69,6 +69,12 @@ uniform vec3 u_orbDirections[16];
 uniform vec3 u_orbColors[16];
 uniform float u_orbIntensity;
 
+// Debris particles (up to 64)
+uniform int u_numDebris;
+uniform vec3 u_debrisPositions[64];
+uniform vec3 u_debrisColors[64];
+uniform float u_debrisSize;  // Size of each debris cube (e.g., 0.25)
+
 // Detail atlas for sub-voxels (3rd hierarchy level)
 uniform sampler3D u_detailAtlas;     // Detail atlas: packed 4³ detail bricks
 uniform vec3 u_detailAtlasSize;      // Size of detail atlas in bricks
@@ -592,22 +598,69 @@ float traceShadow(vec3 origin, vec3 direction) {
     return 1.0;
 }
 
+// Trace ray against debris particles (small cubes)
+// Returns distance to closest hit, or -1.0 if no hit
+vec4 traceDebris(vec3 origin, vec3 direction, float maxDist) {
+    float closestDist = maxDist;
+    vec3 closestColor = vec3(0.0);
+    bool hitAny = false;
+
+    float halfSize = u_debrisSize * 0.5;
+
+    for (int i = 0; i < 64; i++) {
+        if (i >= u_numDebris) break;
+
+        vec3 center = u_debrisPositions[i];
+        vec3 boxMin = center - halfSize;
+        vec3 boxMax = center + halfSize;
+
+        // Ray-box intersection
+        vec2 tBox = intersectAABB(origin, direction, boxMin, boxMax);
+
+        if (tBox.x < tBox.y && tBox.x > 0.0 && tBox.x < closestDist) {
+            closestDist = tBox.x;
+            closestColor = u_debrisColors[i];
+            hitAny = true;
+        }
+    }
+
+    if (hitAny) {
+        return vec4(closestColor, closestDist);
+    }
+    return vec4(0.0, 0.0, 0.0, -1.0);
+}
+
 void main() {
     // Calculate ray direction
     float aspectRatio = u_resolution.x / u_resolution.y;
     float fovRad = u_fov * 3.14159265 / 180.0;
     float halfHeight = tan(fovRad / 2.0);
     float halfWidth = aspectRatio * halfHeight;
-    
+
     vec2 ndc = v_uv * 2.0 - 1.0;
     vec3 rayDir = normalize(u_cameraDir + u_cameraRight * ndc.x * halfWidth + u_cameraUp * ndc.y * halfHeight);
-    
+
     // Trace primary ray
     HitResult hit = traceRay(u_cameraPos, rayDir);
+
+    // Trace debris particles
+    float maxDebrisDist = hit.hit ? hit.distance : 1000.0;
+    vec4 debrisHit = traceDebris(u_cameraPos, rayDir, maxDebrisDist);
     
     vec3 color;
     vec3 worldSize = getWorldSize();
-    
+
+    // Check if debris is closer than voxel hit
+    bool useDebris = debrisHit.w > 0.0;
+    if (useDebris) {
+        // Override hit with debris
+        hit.hit = true;
+        hit.color = vec4(debrisHit.rgb, 1.0);
+        hit.distance = debrisHit.w;
+        // Simple normal approximation (facing camera)
+        hit.normal = -rayDir;
+    }
+
     if (hit.hit) {
         if (u_showNormals == 1) {
             color = hit.normal * 0.5 + 0.5;
@@ -1279,7 +1332,10 @@ class VoxelEngine {
             lanternConeAngle: 0.45,  // radians (~25 degrees)
             orbLights: [],  // Array of {pos, dir, color}
             orbIntensity: 3.0,  // 50% brighter
-            waterColor: [-1, -1, -1]  // Water color for surface rendering (negative = disabled)
+            waterColor: [-1, -1, -1],  // Water color for surface rendering (negative = disabled)
+            // Debris particles for GPU rendering
+            debrisParticles: [],  // Array of {x, y, z, r, g, b}
+            debrisSize: 0.25  // Size of each debris cube
         };
         
         // Components
@@ -1376,6 +1432,11 @@ class VoxelEngine {
             u_detailAtlas: gl.getUniformLocation(this.program, 'u_detailAtlas'),
             u_detailAtlasSize: gl.getUniformLocation(this.program, 'u_detailAtlasSize'),
             u_detailBrickSize: gl.getUniformLocation(this.program, 'u_detailBrickSize'),
+            // Debris particle uniforms
+            u_numDebris: gl.getUniformLocation(this.program, 'u_numDebris'),
+            u_debrisPositions: gl.getUniformLocation(this.program, 'u_debrisPositions'),
+            u_debrisColors: gl.getUniformLocation(this.program, 'u_debrisColors'),
+            u_debrisSize: gl.getUniformLocation(this.program, 'u_debrisSize'),
         };
         
         // Create fullscreen quad
@@ -1680,6 +1741,30 @@ class VoxelEngine {
             gl.uniform3fv(this.locations.u_orbPositions, positions);
             gl.uniform3fv(this.locations.u_orbDirections, directions);
             gl.uniform3fv(this.locations.u_orbColors, colors);
+        }
+
+        // Debris particle uniforms
+        const debris = this.settings.debrisParticles;
+        const numDebris = Math.min(debris.length, 64);
+        gl.uniform1i(this.locations.u_numDebris, numDebris);
+        gl.uniform1f(this.locations.u_debrisSize, this.settings.debrisSize);
+
+        if (numDebris > 0) {
+            const positions = new Float32Array(64 * 3);
+            const colors = new Float32Array(64 * 3);
+
+            for (let i = 0; i < numDebris; i++) {
+                const p = debris[i];
+                positions[i * 3] = p.x;
+                positions[i * 3 + 1] = p.y;
+                positions[i * 3 + 2] = p.z;
+                colors[i * 3] = p.r / 255;
+                colors[i * 3 + 1] = p.g / 255;
+                colors[i * 3 + 2] = p.b / 255;
+            }
+
+            gl.uniform3fv(this.locations.u_debrisPositions, positions);
+            gl.uniform3fv(this.locations.u_debrisColors, colors);
         }
 
         // Draw
