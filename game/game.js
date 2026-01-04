@@ -79,8 +79,9 @@ class MiningDebris {
             const newY = p.y + p.vy * dt;
             const newZ = p.z + p.vz * dt;
 
-            // Check collision - look at voxel BELOW the particle's new position
-            const checkY = Math.floor(newY - 0.01);  // Slightly below particle center
+            // Check collision - look at voxel just below particle's bottom
+            const particleBottom = newY - 0.125;  // Half of debris size (0.25)
+            const checkY = Math.floor(particleBottom - 0.01);
             const voxelBelow = world.getVoxel(Math.floor(newX), checkY, Math.floor(newZ));
 
             // Only collide with solid non-water voxels (and ignore detail markers a=255)
@@ -89,12 +90,13 @@ class MiningDebris {
             if (isSolid && p.vy < 0) {
                 // Hit ground from above - bounce or settle
                 const groundY = checkY + 1;  // Top of the solid voxel
+                const halfSize = 0.125;      // Half of debris size (0.25)
                 if (Math.abs(p.vy) > 2) {
                     p.vy = -p.vy * bounceRestitution;
-                    p.y = groundY + 0.01;
+                    p.y = groundY + halfSize;  // Bottom of particle rests on ground
                 } else {
                     p.onGround = true;
-                    p.y = groundY + 0.01;
+                    p.y = groundY + halfSize;  // Bottom of particle rests on ground
                     p.vy = 0;
                 }
                 p.x = newX;
