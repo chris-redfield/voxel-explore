@@ -69,10 +69,10 @@ uniform vec3 u_orbDirections[16];
 uniform vec3 u_orbColors[16];
 uniform float u_orbIntensity;
 
-// Debris particles (up to 64)
+// Debris particles (up to 32)
 uniform int u_numDebris;
-uniform vec3 u_debrisPositions[64];
-uniform vec3 u_debrisColors[64];
+uniform vec3 u_debrisPositions[32];
+uniform vec3 u_debrisColors[32];
 uniform float u_debrisSize;  // Size of each debris cube (e.g., 0.25)
 
 // Detail atlas for sub-voxels (3rd hierarchy level)
@@ -607,7 +607,7 @@ vec4 traceDebris(vec3 origin, vec3 direction, float maxDist) {
 
     float halfSize = u_debrisSize * 0.5;
 
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < 32; i++) {
         if (i >= u_numDebris) break;
 
         vec3 center = u_debrisPositions[i];
@@ -1745,13 +1745,13 @@ class VoxelEngine {
 
         // Debris particle uniforms
         const debris = this.settings.debrisParticles;
-        const numDebris = Math.min(debris.length, 64);
+        const numDebris = Math.min(debris.length, 32);
         gl.uniform1i(this.locations.u_numDebris, numDebris);
         gl.uniform1f(this.locations.u_debrisSize, this.settings.debrisSize);
 
         if (numDebris > 0) {
-            const positions = new Float32Array(64 * 3);
-            const colors = new Float32Array(64 * 3);
+            const positions = new Float32Array(32 * 3);
+            const colors = new Float32Array(32 * 3);
 
             for (let i = 0; i < numDebris; i++) {
                 const p = debris[i];

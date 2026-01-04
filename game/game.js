@@ -12,14 +12,12 @@ class MiningDebris {
     }
 
     // Create debris from a destroyed voxel
-    // Spawns 8 particles for performance (64 max / 8 = 8 simultaneous voxels)
+    // Spawns 4 particles for performance (32 max / 4 = 8 simultaneous voxels)
     spawnFromVoxel(x, y, z, color) {
-        // Spawn particles at 8 corners of the voxel
+        // Spawn particles at 4 alternating corners of the voxel
         const positions = [
-            [0.25, 0.25, 0.25], [0.75, 0.25, 0.25],
-            [0.25, 0.75, 0.25], [0.75, 0.75, 0.25],
-            [0.25, 0.25, 0.75], [0.75, 0.25, 0.75],
-            [0.25, 0.75, 0.75], [0.75, 0.75, 0.75]
+            [0.25, 0.25, 0.25], [0.75, 0.75, 0.25],
+            [0.75, 0.25, 0.75], [0.25, 0.75, 0.75]
         ];
 
         for (const [ox, oy, oz] of positions) {
