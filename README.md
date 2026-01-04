@@ -63,6 +63,9 @@ Example: 64 coarse x 8 brick = 512 voxels per axis
 | SHIFT | Sprint / Descend |
 | F | Toggle Flight (cave-level) |
 | L | Toggle Flashlight/Lantern |
+| 0 | Unequip tool |
+| 1 | Equip mining tool |
+| Left Click | Mine voxel (with tool equipped) |
 | Mouse | Look around |
 | ESC | Release cursor |
 
@@ -456,6 +459,69 @@ python -m http.server 8000
 
 ### Browser Requirements
 - WebGL2 support (Chrome, Firefox, Edge, Safari 15+)
+
+## Mining System
+
+### Voxel Destruction
+Players can destroy voxels using the mining tool:
+
+| Key | Action |
+|-----|--------|
+| 0 | Unequip tool |
+| 1 | Equip mining tool |
+| Left Click | Mine targeted voxel (8 block reach) |
+
+### Debris Particle Animation
+When a voxel is destroyed, it breaks into 4 sub-voxel sized particles that scatter with physics:
+- **Gravity**: Particles fall and bounce off solid voxels
+- **Spread**: Random velocity scatters debris outward
+- **Lifetime**: Particles fade after 1.5-2 seconds
+
+### Technical Implementation
+
+**Current approach: GPU Ray-traced Particles**
+
+Debris particles are rendered by the fragment shader alongside voxels:
+```glsl
+// For every pixel, test ray against all particles
+for (int i = 0; i < 32; i++) {
+    if (i >= u_numDebris) break;
+    // Ray-box intersection test
+}
+```
+
+**Performance characteristics:**
+- Cost: `screen_pixels × particle_count` intersection tests per frame
+- Current limits: 32 particles max (4 per voxel × 8 simultaneous voxels)
+- Particles are tested even when off-screen or behind camera
+
+**Limitations:**
+- Does not scale well beyond ~32 particles
+- Full-screen cost regardless of particle screen coverage
+- Loop iterations fixed at compile time (GPU SIMD constraints)
+
+### Future Improvement: Instanced Rendering
+
+For large-scale particle effects (explosions, mass destruction), the proper solution is **instanced rasterization**:
+
+```
+// Instead of ray-tracing each particle:
+For EVERY particle:
+    Draw a small cube mesh (GPU handles pixel coverage automatically)
+```
+
+**Benefits of instanced rendering:**
+| Aspect | Ray-traced (current) | Instanced (future) |
+|--------|---------------------|-------------------|
+| 32 particles | 2M pixels × 32 tests | 32 tiny cubes |
+| Off-screen particles | Still tested | Zero cost (culled) |
+| 1000 particles | Impossible | Easy, one draw call |
+| Scaling | O(pixels × particles) | O(particles) |
+
+**Implementation requirements:**
+- Separate render pass for particles
+- Depth buffer integration with ray-traced voxel world
+- Instance buffer for particle positions/colors
 
 ## TODO
 
