@@ -676,11 +676,15 @@ class SeaCaveGame {
 
         this._resize();
 
+        const mem = this.engine.getMemoryUsage();
         console.log('=== SEA CAVES LOADED ===');
         console.log(`World size: ${this.engine.world.worldSize}³`);
         console.log(`Sea level: ${SEA_LEVEL}`);
         console.log(`Voxels: ${this.engine.getVoxelCount().toLocaleString()}`);
-        console.log(`Memory: ${this.engine.getMemoryUsage().totalMB.toFixed(2)} MB`);
+        console.log(`Bricks: ${mem.brickCount.toLocaleString()} / ${mem.maxBricks.toLocaleString()} (${(mem.atlasUtilization * 100).toFixed(1)}% utilization)`);
+        console.log(`Atlas size: ${mem.atlasSize}³ bricks`);
+        console.log(`CPU Memory: ${mem.totalMB.toFixed(2)} MB`);
+        console.log(`GPU Memory: ${mem.gpuTotalMB.toFixed(0)} MB (brick atlas: ${(mem.gpuBrickAtlas / 1024 / 1024).toFixed(0)} MB)`);
         console.log(`Load time: ${this.loadTime.toFixed(1)}s`);
     }
 
@@ -1599,7 +1603,8 @@ class SeaCaveGame {
         }
 
         document.getElementById('voxel-count').textContent = this.engine.getVoxelCount().toLocaleString();
-        document.getElementById('memory-usage').textContent = this.engine.getMemoryUsage().totalMB.toFixed(2) + ' MB';
+        const mem = this.engine.getMemoryUsage();
+        document.getElementById('memory-usage').textContent = mem.gpuTotalMB.toFixed(0) + ' MB GPU';
     }
 
     run() {

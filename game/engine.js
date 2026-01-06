@@ -886,17 +886,25 @@ class BrickMapWorld {
         this.dirtyBricks = new Set();  // Brick indices that need uploading
         this.coarseGridDirty = false;  // Whether coarse grid needs uploading
         
-        // Atlas configuration
-        // For large worlds (4096³), we need more brick capacity
-        // 96³ = 884,736 bricks, texture = 768³ (~1.8GB VRAM)
-        this.atlasSize = 96;
+        // Atlas configuration - sized based on world size
+        // Formula: For coarseSize N, typical sparse worlds use ~10-20% fill
+        // Atlas capacity = atlasSize³ bricks, texture size = atlasSize × brickSize
+        // Memory = (atlasSize × brickSize)³ × 4 bytes
+        //
+        // Sizing guide:
+        //   coarseSize 64  (512³ world)  -> atlasSize 32 -> 256³ tex ->  67 MB
+        //   coarseSize 128 (1024³ world) -> atlasSize 48 -> 384³ tex -> 226 MB
+        //   coarseSize 256 (2048³ world) -> atlasSize 64 -> 512³ tex -> 536 MB
+        //   coarseSize 512 (4096³ world) -> atlasSize 96 -> 768³ tex -> 1.8 GB
+        this.atlasSize = this._calculateAtlasSize(coarseSize);
         this.brickAtlasData = null;
 
         // Detail brick storage (3rd hierarchy level for sub-voxels)
         this.detailBricks = new Map();      // Map<detailIndex, Uint8Array>
         this.nextDetailIndex = 1;           // 1-based (0 = no detail)
         this.dirtyDetailBricks = new Set(); // Detail brick indices needing upload
-        this.detailAtlasSize = 48;          // 48³ = 110,592 detail bricks max
+        // Detail atlas also scales with world size
+        this.detailAtlasSize = Math.max(24, Math.min(48, Math.ceil(coarseSize / 3)));
         this.detailBrickSize = 4;           // 4³ sub-voxels per detail brick
         this.detailCount = 0;
 
@@ -904,7 +912,28 @@ class BrickMapWorld {
         this.voxelCount = 0;
         this.brickCount = 0;
     }
-    
+
+    // Calculate optimal atlas size based on world size
+    // Returns atlas dimension in bricks (texture will be atlasSize × brickSize per axis)
+    _calculateAtlasSize(coarseSize) {
+        // Sparse voxel worlds (islands, caves, structures) typically use only
+        // a small fraction of the theoretical max. The surface layer is thin,
+        // caves are hollow, and most of the world is empty air.
+        //
+        // Empirical sizing based on typical game content:
+        //   coarseSize 64  (512³ world)  -> ~20-40K bricks  -> atlasSize 32
+        //   coarseSize 128 (1024³ world) -> ~50-100K bricks -> atlasSize 48
+        //   coarseSize 256 (2048³ world) -> ~100-200K bricks -> atlasSize 64
+        //   coarseSize 512 (4096³ world) -> ~200-500K bricks -> atlasSize 80
+        //
+        // Use lookup table for predictable memory usage
+        if (coarseSize <= 64) return 32;      //  67 MB GPU
+        if (coarseSize <= 128) return 48;     // 226 MB GPU
+        if (coarseSize <= 256) return 64;     // 536 MB GPU
+        if (coarseSize <= 384) return 80;     // 1.0 GB GPU
+        return 96;                             // 1.8 GB GPU (max)
+    }
+
     _getCoarseIndex(cx, cy, cz) {
         if (cx < 0 || cx >= this.coarseSize || 
             cy < 0 || cy >= this.coarseSize || 
@@ -1292,15 +1321,38 @@ class BrickMapWorld {
     }
     
     getMemoryUsage() {
+        // CPU-side data (what's actually stored in JS)
         const coarseBytes = this.coarseGrid.byteLength;
         const brickBytes = this.brickCount * this.brickSize * this.brickSize * this.brickSize * 4;
         const detailBytes = this.detailCount * this.detailBrickSize * this.detailBrickSize * this.detailBrickSize * 4;
+        const cpuTotal = coarseBytes + brickBytes + detailBytes;
+
+        // GPU-side texture allocations (pre-allocated, may be larger than used)
+        const gpuCoarse = this.coarseSize * this.coarseSize * this.coarseSize * 4;
+        const atlasTexels = this.atlasSize * this.brickSize;
+        const gpuBrickAtlas = atlasTexels * atlasTexels * atlasTexels * 4;
+        const detailTexels = this.detailAtlasSize * this.detailBrickSize;
+        const gpuDetailAtlas = detailTexels * detailTexels * detailTexels * 4;
+        const gpuTotal = gpuCoarse + gpuBrickAtlas + gpuDetailAtlas;
+
         return {
+            // CPU memory
             coarseGrid: coarseBytes,
             bricks: brickBytes,
             detailBricks: detailBytes,
-            total: coarseBytes + brickBytes + detailBytes,
-            totalMB: (coarseBytes + brickBytes + detailBytes) / (1024 * 1024)
+            total: cpuTotal,
+            totalMB: cpuTotal / (1024 * 1024),
+            // GPU texture allocations
+            gpuCoarse: gpuCoarse,
+            gpuBrickAtlas: gpuBrickAtlas,
+            gpuDetailAtlas: gpuDetailAtlas,
+            gpuTotal: gpuTotal,
+            gpuTotalMB: gpuTotal / (1024 * 1024),
+            // Stats
+            brickCount: this.brickCount,
+            maxBricks: this.atlasSize * this.atlasSize * this.atlasSize,
+            atlasSize: this.atlasSize,
+            atlasUtilization: this.brickCount / (this.atlasSize * this.atlasSize * this.atlasSize)
         };
     }
 }
